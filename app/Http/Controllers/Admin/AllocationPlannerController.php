@@ -6,8 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\DeliveryOrder;
 use App\Models\DeliveryBatch;
 use App\Models\Vehicle;
-use App\Models\AreaGroup;
-use App\Models\Province;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Carbon\Carbon;
@@ -37,24 +35,34 @@ class AllocationPlannerController extends Controller
             ->get();
 
         // Build a single zone with all pending orders (no province grouping)
-        // This allows combining orders from different provinces into one truck
         $zones = [];
         if ($pendingOrders->isNotEmpty()) {
             $ordersArray = $pendingOrders->values()->all();
+
+            // ✅ HYBRID rate precompute for display (list order):
+            // first=base_rate, repeat client anywhere=0, else same area as previous=250, other=500
             $ordersWithCost = [];
+            $seenClients = [];
             $previousAreaId = null;
 
             foreach ($ordersArray as $index => $order) {
-                $baseRate = $order->client?->area?->areaGroup?->base_rate ?? 0;
+                $baseRate = (float) ($order->client?->area?->areaGroup?->base_rate ?? 0);
                 $currentAreaId = $order->client?->area?->id;
+                $currentClientId = $order->client?->id;
 
                 if ($index === 0) {
                     $dropCost = $baseRate;
+                    if ($currentClientId) $seenClients[] = $currentClientId;
                 } else {
-                    if ($currentAreaId && $previousAreaId && $currentAreaId === $previousAreaId) {
-                        $dropCost = 250; // Same area as previous
+                    if ($currentClientId && in_array($currentClientId, $seenClients)) {
+                        $dropCost = 0;
                     } else {
-                        $dropCost = 500; // Different area from previous
+                        if ($currentAreaId && $previousAreaId && $currentAreaId === $previousAreaId) {
+                            $dropCost = 250;
+                        } else {
+                            $dropCost = 500;
+                        }
+                        if ($currentClientId) $seenClients[] = $currentClientId;
                     }
                 }
 
@@ -63,13 +71,19 @@ class AllocationPlannerController extends Controller
                 $ordersWithCost[] = $order;
             }
 
-            // Map orders to array format
+            // Map orders to array format (KEEP ALL FIELDS UI EXPECTS)
             $mappedOrders = collect($ordersWithCost)->map(function ($order) {
                 return [
                     'id' => $order->id,
                     'po_number' => $order->po_number,
                     'po_date' => $order->po_date?->format('Y-m-d'),
                     'scheduled_date' => $order->scheduled_date?->format('Y-m-d'),
+
+                    // ✅ for frontend compute
+                    'client_id' => $order->client?->id,
+                    'area_id' => $order->client?->area?->id,
+                    'base_rate' => (float) ($order->client?->area?->areaGroup?->base_rate ?? 0),
+
                     'client_code' => $order->client?->code,
                     'client_name' => $order->client?->name,
                     'province_name' => $order->client?->province?->name ?? 'Unknown',
@@ -78,9 +92,13 @@ class AllocationPlannerController extends Controller
                     'zone_code' => $order->client?->area?->areaGroup?->code ?? '-',
                     'area_group_id' => $order->client?->area?->areaGroup?->id,
                     'distance_km' => $order->client?->distance_km ?? 0,
-                    'total_items' => $order->total_items,
-                    'total_amount' => $order->total_amount,
-                    'drop_cost' => $order->estimated_drop_cost,
+
+                    'total_items' => (int) ($order->total_items ?? 0),
+                    'total_amount' => (float) ($order->total_amount ?? 0),
+
+                    // ✅ display when not selected; selection uses frontend compute
+                    'drop_cost' => (float) ($order->estimated_drop_cost ?? 0),
+
                     'is_overdue' => $order->scheduled_date && $order->scheduled_date->lt(Carbon::today()),
                 ];
             })->values();
@@ -107,15 +125,15 @@ class AllocationPlannerController extends Controller
                 ];
             })->values();
 
-            $totalValue = $pendingOrders->sum('total_amount');
-            $totalRate = collect($ordersWithCost)->sum(fn($o) => $o->estimated_drop_cost);
+            $totalValue = (float) $pendingOrders->sum('total_amount');
+            $totalRate = (float) collect($ordersWithCost)->sum(fn($o) => (float) ($o->estimated_drop_cost ?? 0));
             $recommendedVehicle = DeliveryBatch::determineVehicleType($totalValue);
             $overdueCount = $pendingOrders->filter(fn($o) => $o->scheduled_date?->lt(Carbon::today()))->count();
 
             $zones[] = [
                 'id' => 'all-orders',
                 'order_count' => $pendingOrders->count(),
-                'total_items' => $pendingOrders->sum('total_items'),
+                'total_items' => (int) $pendingOrders->sum('total_items'),
                 'total_value' => $totalValue,
                 'batch_cost' => $totalRate,
                 'recommended_vehicle' => $recommendedVehicle,
@@ -134,7 +152,6 @@ class AllocationPlannerController extends Controller
             ->orderBy('created_at', 'desc')
             ->get()
             ->map(function ($batch) {
-                // Get unique province names for this batch
                 $provinceNames = $batch->orders
                     ->map(fn($o) => $o->client?->province?->name)
                     ->filter()
@@ -170,7 +187,7 @@ class AllocationPlannerController extends Controller
         // Get available vehicles
         $vehicles = Vehicle::active()->get();
 
-        // Summary - count provinces as zones
+        // Summary
         $summary = [
             'unallocated_zones' => count($zones),
             'unallocated_orders' => $pendingOrders->count(),
@@ -207,39 +224,46 @@ class AllocationPlannerController extends Controller
 
         // Get orders and calculate totals
         $orders = DeliveryOrder::with(['client.area.areaGroup'])->whereIn('id', $orderIds)->orderBy('po_date', 'asc')->get();
-        
+
         // Get first order's area group for batch naming
         $firstOrder = $orders->first();
         $areaGroup = $firstOrder->client?->area?->areaGroup;
-        
+
         if (!$areaGroup) {
             return back()->with('error', 'Could not determine area group from orders');
         }
-        
+
         $totalValue = $orders->sum('total_amount');
         $totalItems = $orders->sum('total_items');
         $orderCount = $orders->count();
-        
-        // Calculate batch cost sequentially (matching Route Planner logic)
+
+        // ✅ HYBRID cost compute (for batch total_rate)
+        $seenClients = [];
         $previousAreaId = null;
         $batchCost = 0;
-        
+
         foreach ($orders as $index => $order) {
-            $baseRate = $order->client?->area?->areaGroup?->base_rate ?? 0;
+            $baseRate = (float) ($order->client?->area?->areaGroup?->base_rate ?? 0);
             $currentAreaId = $order->client?->area?->id;
-            
+            $currentClientId = $order->client?->id;
+
             if ($index === 0) {
-                $batchCost += $baseRate;
+                $dropCost = $baseRate;
+                if ($currentClientId) $seenClients[] = $currentClientId;
             } else {
-                if ($currentAreaId && $previousAreaId && $currentAreaId === $previousAreaId) {
-                    $batchCost += 250; // Same area as previous
+                if ($currentClientId && in_array($currentClientId, $seenClients)) {
+                    $dropCost = 0;
                 } else {
-                    $batchCost += 500; // Different area from previous
+                    if ($currentAreaId && $previousAreaId && $currentAreaId === $previousAreaId) $dropCost = 250;
+                    else $dropCost = 500;
+                    if ($currentClientId) $seenClients[] = $currentClientId;
                 }
             }
+
+            $batchCost += $dropCost;
             $previousAreaId = $currentAreaId;
         }
-        
+
         // Calculate max distance
         $maxDistance = $orders->max(fn($o) => $o->client?->distance_km ?? 0);
 
@@ -260,45 +284,50 @@ class AllocationPlannerController extends Controller
                 'created_by' => Auth::id(),
             ]);
 
-            // Assign orders to batch and set rates
-            // First order = base rate
-            // Additional orders same zone as PREVIOUS = +₱250 (drop_same_zone)
-            // Additional orders different zone from PREVIOUS = +₱500 (drop_other_zone)
-            $batchAreaGroupId = $areaGroup->id;
+            // ✅ Assign orders to batch + HYBRID per-order rates
+            $seenClients = [];
             $previousAreaId = null;
-            
+
             foreach ($orders as $index => $order) {
-                $isFirst = $index === 0;
                 $orderAreaId = $order->client?->area?->id;
-                // Use the order's own area group base rate, not the batch's
-                $orderBaseRate = $order->client?->area?->areaGroup?->base_rate ?? 0;
-                
-                if ($isFirst) {
+                $orderClientId = $order->client?->id;
+                $orderBaseRate = (float) ($order->client?->area?->areaGroup?->base_rate ?? 0);
+
+                if ($index === 0) {
                     $dropCost = $orderBaseRate;
                     $additionalRateType = 'none';
                     $additionalRate = 0;
+
+                    if ($orderClientId) $seenClients[] = $orderClientId;
                 } else {
-                    // Check if order is from same area as PREVIOUS order
-                    if ($orderAreaId && $previousAreaId && $orderAreaId === $previousAreaId) {
-                        $dropCost = 250;
-                        $additionalRateType = 'drop_same_zone';
-                        $additionalRate = 250;
+                    if ($orderClientId && in_array($orderClientId, $seenClients)) {
+                        $dropCost = 0;
+                        $additionalRateType = 'same_client';
+                        $additionalRate = 0;
                     } else {
-                        $dropCost = 500;
-                        $additionalRateType = 'drop_other_zone';
-                        $additionalRate = 500;
+                        if ($orderAreaId && $previousAreaId && $orderAreaId === $previousAreaId) {
+                            $dropCost = 250;
+                            $additionalRateType = 'drop_same_zone';
+                            $additionalRate = 250;
+                        } else {
+                            $dropCost = 500;
+                            $additionalRateType = 'drop_other_zone';
+                            $additionalRate = 500;
+                        }
+
+                        if ($orderClientId) $seenClients[] = $orderClientId;
                     }
                 }
-                
+
                 $previousAreaId = $orderAreaId;
-                
+
                 $order->update([
                     'batch_id' => $batch->id,
                     'base_rate' => $orderBaseRate,
                     'additional_rate_type' => $additionalRateType,
                     'additional_rate' => $additionalRate,
                     'total_rate' => $dropCost,
-                    'status' => 'confirmed', // Order is confirmed when assigned to batch
+                    'status' => 'confirmed',
                 ]);
             }
         });
@@ -312,7 +341,7 @@ class AllocationPlannerController extends Controller
     public function removeFromBatch(Request $request, DeliveryOrder $order)
     {
         $batch = $order->batch;
-        
+
         if (!$batch) {
             return back()->with('error', 'Order is not assigned to any batch');
         }
@@ -329,41 +358,50 @@ class AllocationPlannerController extends Controller
             ]);
 
             // Recalculate batch totals
-            $remainingOrders = $batch->orders()->with(['client.area.areaGroup'])->get();
-            
+            $remainingOrders = $batch->orders()->with(['client.area.areaGroup'])->orderBy('po_date', 'asc')->get();
+
             if ($remainingOrders->isEmpty()) {
-                // Delete empty batch
                 $batch->delete();
             } else {
-                // Calculate batch cost considering zone differences (compare to PREVIOUS order)
+                // ✅ HYBRID recalculation
                 $totalRate = 0;
+                $seenClients = [];
                 $previousAreaId = null;
-                
+
                 foreach ($remainingOrders as $index => $remainingOrder) {
-                    $isFirst = $index === 0;
                     $orderAreaId = $remainingOrder->client?->area?->id;
-                    $orderBaseRate = $remainingOrder->client?->area?->areaGroup?->base_rate ?? 0;
-                    
-                    if ($isFirst) {
+                    $orderClientId = $remainingOrder->client?->id;
+                    $orderBaseRate = (float) ($remainingOrder->client?->area?->areaGroup?->base_rate ?? 0);
+
+                    if ($index === 0) {
                         $dropCost = $orderBaseRate;
                         $additionalRateType = 'none';
                         $additionalRate = 0;
+
+                        if ($orderClientId) $seenClients[] = $orderClientId;
                     } else {
-                        // Check if order is from same area as PREVIOUS order
-                        if ($orderAreaId && $previousAreaId && $orderAreaId === $previousAreaId) {
-                            $dropCost = 250;
-                            $additionalRateType = 'drop_same_zone';
-                            $additionalRate = 250;
+                        if ($orderClientId && in_array($orderClientId, $seenClients)) {
+                            $dropCost = 0;
+                            $additionalRateType = 'same_client';
+                            $additionalRate = 0;
                         } else {
-                            $dropCost = 500;
-                            $additionalRateType = 'drop_other_zone';
-                            $additionalRate = 500;
+                            if ($orderAreaId && $previousAreaId && $orderAreaId === $previousAreaId) {
+                                $dropCost = 250;
+                                $additionalRateType = 'drop_same_zone';
+                                $additionalRate = 250;
+                            } else {
+                                $dropCost = 500;
+                                $additionalRateType = 'drop_other_zone';
+                                $additionalRate = 500;
+                            }
+
+                            if ($orderClientId) $seenClients[] = $orderClientId;
                         }
                     }
-                    
+
                     $previousAreaId = $orderAreaId;
                     $totalRate += $dropCost;
-                    
+
                     $remainingOrder->update([
                         'base_rate' => $orderBaseRate,
                         'additional_rate_type' => $additionalRateType,
@@ -372,7 +410,6 @@ class AllocationPlannerController extends Controller
                     ]);
                 }
 
-                // Update batch totals
                 $batch->update([
                     'order_count' => $remainingOrders->count(),
                     'total_items' => $remainingOrders->sum('total_items'),
@@ -413,8 +450,6 @@ class AllocationPlannerController extends Controller
     public function startDelivery(DeliveryBatch $batch)
     {
         $batch->update(['status' => 'in_transit']);
-
-        // Update all orders in batch to in_transit
         $batch->orders()->update(['status' => 'in_transit']);
 
         return back()->with('success', "Batch {$batch->batch_number} is now in transit");
@@ -432,13 +467,11 @@ class AllocationPlannerController extends Controller
         $deliveryDate = $request->input('delivery_date', Carbon::today()->toDateString());
 
         DB::transaction(function () use ($batch, $deliveryDate) {
-            // Update batch status
             $batch->update([
                 'status' => 'completed',
                 'actual_date' => $deliveryDate,
             ]);
 
-            // Update all orders in batch
             foreach ($batch->orders as $order) {
                 $order->update([
                     'actual_date' => $deliveryDate,

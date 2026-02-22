@@ -52,24 +52,32 @@ import {
     BoxIcon,
     Settings2
 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 interface Order {
     id: number;
     po_number: string;
     po_date: string;
     scheduled_date: string;
+
+    client_id: number | null;     // ✅ needed for same-client-anywhere rule
     client_code: string;
     client_name: string;
+
     province_name: string;
     area_name: string;
     zone_name: string;
     zone_code: string;
     area_group_id: number;
+
+    area_id: number | null;       // ✅ needed for same-area rule
+    base_rate: number;            // ✅ needed for first stop base
     distance_km: number;
+
     total_items: number;
     total_amount: number;
-    drop_cost: number;
+
+    drop_cost: number;            // backend precomputed (display when not selected)
     is_overdue: boolean;
 }
 
@@ -150,6 +158,54 @@ interface Props {
     selectedDate: string;
 }
 
+const toNumber = (v: unknown): number => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+    if (typeof v === 'string') {
+        const cleaned = v.replace(/[^0-9.-]+/g, '');
+        const n = Number(cleaned);
+        return Number.isFinite(n) ? n : 0;
+    }
+    return 0;
+};
+
+// ✅ HYBRID RULE (selection-based):
+// 1) first = base_rate
+// 2) if client already served anywhere in selection = 0
+// 3) else new client: same area as previous = 250 else 500
+function computeSelectionRates(selectedOrdersSorted: Order[]) {
+    const rateById = new Map<number, number>();
+
+    const seenClients = new Set<number>();
+    let prevAreaId: number | null = null;
+
+    selectedOrdersSorted.forEach((o, idx) => {
+        const clientId = o.client_id ?? null;
+        const areaId = o.area_id ?? null;
+
+        let rate = 0;
+
+        if (idx === 0) {
+            rate = toNumber(o.base_rate);
+            if (clientId) seenClients.add(clientId);
+        } else {
+            if (clientId && seenClients.has(clientId)) {
+                rate = 0;
+            } else {
+                if (areaId && prevAreaId && areaId === prevAreaId) rate = 250;
+                else rate = 500;
+
+                if (clientId) seenClients.add(clientId);
+            }
+        }
+
+        rateById.set(o.id, rate);
+        prevAreaId = areaId;
+    });
+
+    const total = Array.from(rateById.values()).reduce((s, v) => s + v, 0);
+    return { rateById, total };
+}
+
 export default function AllocationPlanner({ zones, batches, vehicles, summary, selectedDate }: Props) {
     const [date, setDate] = useState(selectedDate);
     const [openBatches, setOpenBatches] = useState<number[]>([]);
@@ -168,12 +224,15 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
         open: false,
         batch: null,
     });
+
     const [deliveryDate, setDeliveryDate] = useState(new Date().toISOString().split('T')[0]);
 
-    // The single zone with all orders (or null if no pending orders)
+    // Single zone with all pending orders
     const allOrders = zones.length > 0 ? zones[0] : null;
 
-    // ===== ORDER SELECTION (CHECKBOXES) =====
+    // =============================
+    // ORDER SELECTION
+    // =============================
     const [selectedOrderIds, setSelectedOrderIds] = useState<Set<number>>(new Set());
 
     const toggleOrder = (id: number) => {
@@ -184,10 +243,9 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
         });
     };
 
-    const clearSelected = () => setSelectedOrderIds(new Set());
+    const clearSelected = () => setSelectedOrderIds(new Set<number>());
 
     const allOrderIds = allOrders ? allOrders.orders.map(o => o.id) : [];
-
     const allSelected =
         allOrderIds.length > 0 &&
         allOrderIds.every(id => selectedOrderIds.has(id));
@@ -199,45 +257,57 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
         });
     };
 
-    const selectedCount = selectedOrderIds.size;
-
-    // ===== SELECTED SUMMARY (computed from checked orders) =====
     const selectedOrders = allOrders
         ? allOrders.orders.filter(o => selectedOrderIds.has(o.id))
         : [];
 
-    const selectedTotalValue = selectedOrders.reduce((sum, o) => sum + (o.total_amount ?? 0), 0);
-    const selectedTotalItems = selectedOrders.reduce((sum, o) => sum + (o.total_items ?? 0), 0);
-    const selectedBatchCost = selectedOrders.reduce((sum, o) => sum + (o.drop_cost ?? 0), 0);
+    const selectedCount = selectedOrders.length;
+
+    // ✅ Sort selection for deterministic rate sequence
+    const selectedOrdersSorted = useMemo(() => {
+        return [...selectedOrders].sort((a, b) => {
+            const d = (a.po_date || '').localeCompare(b.po_date || '');
+            if (d !== 0) return d;
+            return a.id - b.id;
+        });
+    }, [selectedOrders]);
+
+    const { rateById: selectedRateById, total: selectedBatchCost } = useMemo(() => {
+        return computeSelectionRates(selectedOrdersSorted);
+    }, [selectedOrdersSorted]);
+
+    // =============================
+    // SELECTED SUMMARY
+    // =============================
+    const selectedTotalValue = selectedOrders.reduce((sum, o) => sum + toNumber(o.total_amount), 0);
+    const selectedTotalItems = selectedOrders.reduce((sum, o) => sum + toNumber(o.total_items), 0);
     const selectedOverdueCount = selectedOrders.reduce((sum, o) => sum + (o.is_overdue ? 1 : 0), 0);
 
-    // Province summary for selected
     const selectedProvinceSummary = selectedOrders.reduce<Record<string, number>>((acc, o) => {
         const key = o.province_name || 'Unknown';
         acc[key] = (acc[key] ?? 0) + 1;
         return acc;
     }, {});
 
-    // Convert summary object to array for UI badges
     const selectedProvinceSummaryList = Object.entries(selectedProvinceSummary)
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count);
 
-    // Recommended vehicle based on selectedTotalValue
+    // Recommended vehicle based on selected total value
     const selectedRecommendedVehicle = selectedTotalValue > 150000 ? 'truck' : 'l300';
     const selectedRecommendedVehicleLabel = selectedRecommendedVehicle === 'truck' ? 'Truck' : 'L300 Van';
 
-    // Fallback display (if nothing selected, show original allOrders summary)
+    // Fallback display when none selected (use allOrders data)
     const displayTotalValue = selectedCount > 0 ? selectedTotalValue : (allOrders?.total_value ?? 0);
     const displayBatchCost = selectedCount > 0 ? selectedBatchCost : (allOrders?.batch_cost ?? 0);
     const displayRecommendedVehicle = selectedCount > 0 ? selectedRecommendedVehicle : (allOrders?.recommended_vehicle ?? 'l300');
     const displayRecommendedVehicleLabel = selectedCount > 0 ? selectedRecommendedVehicleLabel : (allOrders?.recommended_vehicle_label ?? 'L300 Van');
     const displayOverdueCount = selectedCount > 0 ? selectedOverdueCount : (allOrders?.overdue_count ?? 0);
     const displayProvinceSummary = selectedCount > 0 ? selectedProvinceSummaryList : (allOrders?.province_summary ?? []);
-    // ===== END SELECTED SUMMARY =====
 
-    // ===== END ORDER SELECTION =====
-
+    // =============================
+    // HELPERS
+    // =============================
     const toggleBatch = (batchId: number) => {
         setOpenBatches(prev =>
             prev.includes(batchId)
@@ -252,9 +322,9 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
         router.get('/admin/allocation-planner', { date: newDate }, { preserveState: true });
     };
 
-    // Auto-allocate with recommended vehicle (one-click) — ONLY SELECTED
     const handleAutoAllocate = () => {
         if (!allOrders) return;
+
         const orderIds = Array.from(selectedOrderIds);
         if (orderIds.length === 0) return;
 
@@ -263,7 +333,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
         router.post('/admin/allocation-planner/allocate', {
             order_ids: orderIds,
             planned_date: date,
-            vehicle_type: allOrders.recommended_vehicle,
+            vehicle_type: displayRecommendedVehicle,
             vehicle_id: null,
         }, {
             preserveScroll: true,
@@ -271,15 +341,13 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                 setProcessing(false);
                 clearSelected();
             },
-            onError: () => {
-                setProcessing(false);
-            },
+            onError: () => setProcessing(false),
         });
     };
 
-    // Manual allocate with selected vehicle — ONLY SELECTED
     const handleManualAllocate = () => {
         if (!allOrders) return;
+
         const orderIds = Array.from(selectedOrderIds);
         if (orderIds.length === 0) return;
 
@@ -297,9 +365,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                 setProcessing(false);
                 clearSelected();
             },
-            onError: () => {
-                setProcessing(false);
-            },
+            onError: () => setProcessing(false),
         });
     };
 
@@ -319,9 +385,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                 setDeleteDialog({ open: false, batch: null });
                 setProcessing(false);
             },
-            onError: () => {
-                setProcessing(false);
-            },
+            onError: () => setProcessing(false),
         });
     };
 
@@ -337,9 +401,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                 setCompleteDialog({ open: false, batch: null });
                 setProcessing(false);
             },
-            onError: () => {
-                setProcessing(false);
-            },
+            onError: () => setProcessing(false),
         });
     };
 
@@ -347,7 +409,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
         return new Intl.NumberFormat('en-PH', {
             style: 'currency',
             currency: 'PHP',
-        }).format(amount);
+        }).format(toNumber(amount));
     };
 
     const getStatusBadge = (status: string) => {
@@ -426,7 +488,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                         <CardContent>
                             <div className="text-2xl font-bold">Up to ₱150,000</div>
                             <p className="text-xs text-muted-foreground">
-                                Use L300 Van for batches at or below this value
+                                Use L300 Van for batches within this value range
                             </p>
                         </CardContent>
                     </Card>
@@ -439,7 +501,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                         <CardContent>
                             <div className="text-2xl font-bold">Up to ₱250,000</div>
                             <p className="text-xs text-muted-foreground">
-                                Use Truck for batches above ₱150,000
+                                Use Truck for batches beyond L300 capacity
                             </p>
                         </CardContent>
                     </Card>
@@ -464,30 +526,31 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                 </CardContent>
                             </Card>
                         ) : (
-                            <Card className={allOrders.overdue_count > 0 ? 'border-red-300' : ''}>
+                            <Card className={displayOverdueCount > 0 ? 'border-red-300' : ''}>
                                 <CardHeader className="py-4">
                                     <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-3">
-                                            <div className={`p-2 rounded-lg ${allOrders.recommended_vehicle === 'truck' ? 'bg-orange-100' : 'bg-blue-100'}`}>
-                                                <Truck className={`h-4 w-4 ${allOrders.recommended_vehicle === 'truck' ? 'text-orange-600' : 'text-blue-600'}`} />
+                                            <div className={`p-2 rounded-lg ${displayRecommendedVehicle === 'truck' ? 'bg-orange-100' : 'bg-blue-100'}`}>
+                                                <Truck className={`h-4 w-4 ${displayRecommendedVehicle === 'truck' ? 'text-orange-600' : 'text-blue-600'}`} />
                                             </div>
                                             <div>
                                                 <CardTitle className="text-base flex items-center gap-2 flex-wrap">
                                                     <span>All Pending Deliveries</span>
                                                     <Badge variant="secondary" className="text-xs">
-                                                        {allOrders.order_count} orders
+                                                        {selectedCount > 0 ? `${selectedCount} selected` : `${allOrders.order_count} orders`}
                                                     </Badge>
-                                                    {allOrders.overdue_count > 0 && (
+                                                    {displayOverdueCount > 0 && (
                                                         <Badge variant="destructive" className="text-xs">
-                                                            {allOrders.overdue_count} Overdue
+                                                            {displayOverdueCount} Overdue
                                                         </Badge>
                                                     )}
                                                 </CardTitle>
                                                 <CardDescription className="text-xs">
-                                                    {formatCurrency(allOrders.total_value)} • {allOrders.recommended_vehicle_label}
+                                                    {formatCurrency(displayTotalValue)} • {displayRecommendedVehicleLabel}
                                                 </CardDescription>
                                             </div>
                                         </div>
+
                                         <div className="flex items-center gap-2">
                                             <Button
                                                 size="sm"
@@ -501,6 +564,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                 )}
                                                 Allocate ({selectedCount})
                                             </Button>
+
                                             <DropdownMenu>
                                                 <DropdownMenuTrigger asChild>
                                                     <Button size="sm" variant="outline" className="px-2" disabled={selectedCount === 0}>
@@ -511,7 +575,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                     <DropdownMenuItem
                                                         disabled={selectedCount === 0}
                                                         onClick={() => {
-                                                            setSelectedVehicleType(allOrders.recommended_vehicle);
+                                                            setSelectedVehicleType(displayRecommendedVehicle);
                                                             setSelectedVehicleId('');
                                                             setAllocateDialog(true);
                                                         }}
@@ -525,10 +589,10 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                     </div>
                                 </CardHeader>
 
-                                {/* Province & Zone badges */}
                                 <CardContent className="pt-0 pb-3">
+                                    {/* Province badges */}
                                     <div className="flex flex-wrap gap-1 mb-3">
-                                        {allOrders.province_summary.map((ps) => (
+                                        {displayProvinceSummary.map((ps) => (
                                             <Badge key={ps.name} variant="outline" className="text-xs">
                                                 {ps.name}: {ps.count}
                                             </Badge>
@@ -566,43 +630,85 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                             onChange={() => toggleOrder(order.id)}
                                                         />
                                                     </TableCell>
+
                                                     <TableCell className="font-mono text-sm">
                                                         {order.po_number}
                                                         {order.is_overdue && (
                                                             <AlertTriangle className="inline h-3 w-3 text-red-500 ml-1" />
                                                         )}
                                                     </TableCell>
+
                                                     <TableCell>{order.client_code}</TableCell>
+
                                                     <TableCell>
                                                         <Badge variant="outline" className="text-xs">
                                                             {order.province_name}
                                                         </Badge>
                                                     </TableCell>
+
                                                     <TableCell>{order.area_name}</TableCell>
+
                                                     <TableCell>
                                                         <Badge variant="secondary" className="text-xs">
                                                             {order.zone_name}
                                                         </Badge>
                                                     </TableCell>
-                                                    <TableCell className="text-right font-medium">{formatCurrency(order.drop_cost)}</TableCell>
-                                                    <TableCell className="text-right">{order.total_items}</TableCell>
-                                                    <TableCell className="text-right">{formatCurrency(order.total_amount)}</TableCell>
+
+                                                    {/* ✅ If selected: show computed selection rate.
+                                                        If not selected: show backend precomputed drop_cost */}
+                                                    <TableCell className="text-right font-medium">
+                                                        {selectedOrderIds.has(order.id)
+                                                            ? formatCurrency(selectedRateById.get(order.id) ?? 0)
+                                                            : formatCurrency(order.drop_cost ?? 0)
+                                                        }
+                                                    </TableCell>
+
+                                                    <TableCell className="text-right">{toNumber(order.total_items)}</TableCell>
+
+                                                    <TableCell className="text-right">
+                                                        {formatCurrency(order.total_amount)}
+                                                    </TableCell>
                                                 </TableRow>
                                             ))}
                                         </TableBody>
                                     </Table>
 
+                                    {/* Selected summary line */}
+                                    <div className="mt-3 flex items-center justify-between text-sm">
+                                        <span className="text-muted-foreground">
+                                            {selectedCount > 0 ? (
+                                                <>
+                                                    Selected:&nbsp;
+                                                    <span className="font-medium text-foreground">{selectedCount}</span>
+                                                    &nbsp;• Items:&nbsp;
+                                                    <span className="font-medium text-foreground">{selectedTotalItems}</span>
+                                                    &nbsp;• Value:&nbsp;
+                                                    <span className="font-medium text-foreground">{formatCurrency(selectedTotalValue)}</span>
+                                                </>
+                                            ) : (
+                                                <>Tip: Check orders to compute totals</>
+                                            )}
+                                        </span>
+
+                                        {selectedCount > 0 && (
+                                            <Button size="sm" variant="outline" onClick={clearSelected}>
+                                                Clear
+                                            </Button>
+                                        )}
+                                    </div>
+
+                                    {/* Footer */}
                                     <div className="mt-3 pt-3 border-t flex justify-between text-sm">
                                         <div className="flex gap-4">
                                             <span className="text-muted-foreground">
-                                                Batch Cost: <span className="font-medium text-foreground">{formatCurrency(allOrders.batch_cost)}</span>
+                                                Batch Cost: <span className="font-medium text-foreground">{formatCurrency(displayBatchCost)}</span>
                                             </span>
                                             <span className="text-muted-foreground">
-                                                Recommended: <span className="font-medium text-foreground">{allOrders.recommended_vehicle_label}</span>
+                                                Recommended: <span className="font-medium text-foreground">{displayRecommendedVehicleLabel}</span>
                                             </span>
                                         </div>
                                         <span className="text-muted-foreground">
-                                            Total Value: <span className="font-medium text-foreground">{formatCurrency(allOrders.total_value)}</span>
+                                            Total Value: <span className="font-medium text-foreground">{formatCurrency(displayTotalValue)}</span>
                                         </span>
                                     </div>
                                 </CardContent>
@@ -662,6 +768,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                 </div>
                                             </CardHeader>
                                         </CollapsibleTrigger>
+
                                         <CollapsibleContent>
                                             <CardContent className="pt-0">
                                                 <Table>
@@ -672,6 +779,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                             <TableHead className="text-right">Value</TableHead>
                                                         </TableRow>
                                                     </TableHeader>
+
                                                     <TableBody>
                                                         {batch.orders.map((order) => (
                                                             <TableRow key={order.id}>
@@ -682,10 +790,12 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                         ))}
                                                     </TableBody>
                                                 </Table>
+
                                                 <div className="mt-3 pt-3 border-t flex justify-between items-center">
                                                     <span className="text-sm text-muted-foreground">
                                                         Rate: <span className="font-medium text-foreground">{formatCurrency(batch.total_rate)}</span>
                                                     </span>
+
                                                     <div className="flex gap-2">
                                                         {batch.status === 'planned' && (
                                                             <>
@@ -697,6 +807,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                                     <Play className="h-3 w-3 mr-1" />
                                                                     Start
                                                                 </Button>
+
                                                                 <Button
                                                                     size="sm"
                                                                     variant="destructive"
@@ -706,6 +817,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                                 </Button>
                                                             </>
                                                         )}
+
                                                         {batch.status === 'in_transit' && (
                                                             <Button
                                                                 size="sm"
@@ -739,6 +851,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                             Assign a vehicle type to {selectedCount} selected orders
                         </DialogDescription>
                     </DialogHeader>
+
                     <div className="space-y-4 py-4">
                         <div className="grid grid-cols-2 gap-4 text-sm">
                             <div>
@@ -746,29 +859,18 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                 <span className="ml-2 font-medium">{selectedCount}</span>
                             </div>
                             <div>
-                                <span className="text-muted-foreground">Planned Date:</span>
-                                <span className="ml-2 font-medium">{date}</span>
+                                <span className="text-muted-foreground">Total Value:</span>
+                                <span className="ml-2 font-medium">{formatCurrency(displayTotalValue)}</span>
                             </div>
                             <div>
                                 <span className="text-muted-foreground">Batch Cost:</span>
-                                <span className="ml-2 font-medium">{formatCurrency(allOrders?.batch_cost ?? 0)}</span>
+                                <span className="ml-2 font-medium">{formatCurrency(displayBatchCost)}</span>
                             </div>
                             <div>
                                 <span className="text-muted-foreground">Recommended:</span>
-                                <span className="ml-2 font-medium">{allOrders?.recommended_vehicle_label}</span>
+                                <span className="ml-2 font-medium">{displayRecommendedVehicleLabel}</span>
                             </div>
                         </div>
-
-                        {allOrders && allOrders.province_summary.length > 1 && (
-                            <div>
-                                <span className="text-sm text-muted-foreground">Provinces in batch:</span>
-                                <div className="mt-1 flex flex-wrap gap-1">
-                                    {allOrders.province_summary.map(ps => (
-                                        <Badge key={ps.name} variant="outline" className="text-xs">{ps.name}: {ps.count}</Badge>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
 
                         <div className="space-y-2">
                             <Label>Vehicle Type</Label>
@@ -808,12 +910,12 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                             </div>
                         )}
 
-                        {selectedVehicleType && allOrders && (
-                            <div className={`p-3 rounded-lg ${selectedVehicleType === allOrders.recommended_vehicle
-                                    ? 'bg-green-50 text-green-700'
-                                    : 'bg-yellow-50 text-yellow-700'
+                        {selectedVehicleType && (
+                            <div className={`p-3 rounded-lg ${selectedVehicleType === displayRecommendedVehicle
+                                ? 'bg-green-50 text-green-700'
+                                : 'bg-yellow-50 text-yellow-700'
                                 }`}>
-                                {selectedVehicleType === allOrders.recommended_vehicle ? (
+                                {selectedVehicleType === displayRecommendedVehicle ? (
                                     <p className="text-sm flex items-center gap-2">
                                         <CheckCircle2 className="h-4 w-4" />
                                         Vehicle type matches recommendation
@@ -821,12 +923,13 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                 ) : (
                                     <p className="text-sm flex items-center gap-2">
                                         <AlertTriangle className="h-4 w-4" />
-                                        Different from recommended ({allOrders.recommended_vehicle_label})
+                                        Different from recommended ({displayRecommendedVehicleLabel})
                                     </p>
                                 )}
                             </div>
                         )}
                     </div>
+
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setAllocateDialog(false)}>
                             Cancel
