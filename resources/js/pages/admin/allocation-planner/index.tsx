@@ -556,7 +556,6 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                           )}
                         </CardTitle>
 
-                        # // Added this para aesthethic hahaha
                         <CardDescription className="text-xs">
                           {selectedCount > 0 && displayTotalValue !== null ? (
                             <>
