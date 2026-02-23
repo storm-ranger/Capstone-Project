@@ -546,7 +546,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                     )}
                                                 </CardTitle>
                                                 <CardDescription className="text-xs">
-                                                    {formatCurrency(displayTotalValue)} • {displayRecommendedVehicleLabel}
+                                                    {selectedCount > 0 ? `${formatCurrency(selectedTotalValue)} • ${selectedRecommendedVehicleLabel}` : ' '}
                                                 </CardDescription>
                                             </div>
                                         </div>
@@ -659,7 +659,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                                     <TableCell className="text-right font-medium">
                                                         {selectedOrderIds.has(order.id)
                                                             ? formatCurrency(selectedRateById.get(order.id) ?? 0)
-                                                            : formatCurrency(order.drop_cost ?? 0)
+                                                            : '—'
                                                         }
                                                     </TableCell>
 
@@ -701,14 +701,14 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                     <div className="mt-3 pt-3 border-t flex justify-between text-sm">
                                         <div className="flex gap-4">
                                             <span className="text-muted-foreground">
-                                                Batch Cost: <span className="font-medium text-foreground">{formatCurrency(displayBatchCost)}</span>
+                                                Batch Cost: <span className="font-medium text-foreground">{selectedCount > 0 ? formatCurrency(selectedBatchCost) : '—'}</span>
                                             </span>
                                             <span className="text-muted-foreground">
-                                                Recommended: <span className="font-medium text-foreground">{displayRecommendedVehicleLabel}</span>
+                                                Recommended: <span className="font-medium text-foreground">{selectedCount > 0 ? selectedRecommendedVehicleLabel : '—'}</span>
                                             </span>
                                         </div>
                                         <span className="text-muted-foreground">
-                                            Total Value: <span className="font-medium text-foreground">{formatCurrency(displayTotalValue)}</span>
+                                            Total Value: <span className="font-medium text-foreground">{selectedCount > 0 ? formatCurrency(selectedTotalValue) : '—'}</span>
                                         </span>
                                     </div>
                                 </CardContent>
@@ -860,15 +860,15 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                             </div>
                             <div>
                                 <span className="text-muted-foreground">Total Value:</span>
-                                <span className="ml-2 font-medium">{formatCurrency(displayTotalValue)}</span>
+                                <span className="ml-2 font-medium">{selectedCount > 0 ? formatCurrency(selectedTotalValue) : '—'}</span>
                             </div>
                             <div>
                                 <span className="text-muted-foreground">Batch Cost:</span>
-                                <span className="ml-2 font-medium">{formatCurrency(displayBatchCost)}</span>
+                                <span className="ml-2 font-medium">{selectedCount > 0 ? formatCurrency(selectedBatchCost) : '—'}</span>
                             </div>
                             <div>
                                 <span className="text-muted-foreground">Recommended:</span>
-                                <span className="ml-2 font-medium">{displayRecommendedVehicleLabel}</span>
+                                <span className="ml-2 font-medium">{selectedCount > 0 ? selectedRecommendedVehicleLabel : '—'}</span>
                             </div>
                         </div>
 

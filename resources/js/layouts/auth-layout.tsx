@@ -40,7 +40,7 @@ export default function AuthLayout({
                             <img
                                 src="/images/logo.png"
                                 alt="DSS Logo"
-                                className="h-[120px] w-auto"
+                                className="h-[220px] w-auto"
                             />
                         </Link>
                         <h1 className="mt-4 text-2xl font-bold text-gray-900">
