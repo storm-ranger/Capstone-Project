@@ -556,16 +556,13 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                           )}
                         </CardTitle>
 
+                        # // Added this para aesthethic hahaha
                         <CardDescription className="text-xs">
                           {selectedCount > 0 && displayTotalValue !== null ? (
                             <>
                               {formatCurrency(displayTotalValue)} • {displayRecommendedVehicleLabel}
                             </>
-                          ) : (
-                            <>
-                              {formatCurrency(toNumber(allOrders.total_value, 0))} • {allOrders.recommended_vehicle_label}
-                            </>
-                          )}
+                          ) :null}
                         </CardDescription>
                       </div>
                     </div>
