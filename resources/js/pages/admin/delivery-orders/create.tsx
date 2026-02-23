@@ -56,7 +56,6 @@ interface Client {
 interface Product {
     id: number;
     part_number: string;
-    description: string | null;
     unit_price: number;
 }
 
@@ -64,7 +63,6 @@ interface OrderItem {
     id?: number;
     product_id: string;
     part_number: string;
-    description: string;
     unit_price: string;
     quantity: string;
 }
@@ -110,7 +108,7 @@ export default function DeliveryOrdersCreate({ clients }: Props) {
     }, [data.client_id]);
 
     const addItem = () => {
-        const newItems = [...items, { product_id: '', part_number: '', description: '', unit_price: '', quantity: '' }];
+        const newItems = [...items, { product_id: '', part_number: '', unit_price: '', quantity: '' }];
         setItems(newItems);
         setData('items', newItems);
     };
@@ -130,7 +128,6 @@ export default function DeliveryOrdersCreate({ clients }: Props) {
             const product = clientProducts.find(p => p.id.toString() === value);
             if (product) {
                 newItems[index].part_number = product.part_number;
-                newItems[index].description = product.description || '';
                 newItems[index].unit_price = product.unit_price.toString();
             }
         }
@@ -179,7 +176,6 @@ export default function DeliveryOrdersCreate({ clients }: Props) {
             return {
                 value: product.id.toString(),
                 label: product.part_number,
-                sublabel: product.description || undefined,
                 disabled: isAlreadyAdded,
             };
         });
@@ -352,8 +348,7 @@ export default function DeliveryOrdersCreate({ clients }: Props) {
                                 <Table>
                                     <TableHeader>
                                         <TableRow>
-                                            <TableHead className="w-[250px] max-w-[250px]">Product</TableHead>
-                                            <TableHead>Description</TableHead>
+                                            <TableHead className="w-[250px] max-w-[250px]">Product</TableHead>                                          
                                             <TableHead className="w-[120px]">Unit Price</TableHead>
                                             <TableHead className="w-[100px]">Quantity</TableHead>
                                             <TableHead className="w-[120px] text-right">Total</TableHead>
@@ -378,15 +373,6 @@ export default function DeliveryOrdersCreate({ clients }: Props) {
                                                             emptyMessage="No products found."
                                                         />
                                                     )}
-                                                </TableCell>
-                                                <TableCell>
-                                                    <Input
-                                                        value={item.description}
-                                                        onChange={(e) => updateItem(index, 'description', e.target.value)}
-                                                        placeholder="Description"
-                                                        readOnly
-                                                        className="bg-muted"
-                                                    />
                                                 </TableCell>
                                                 <TableCell>
                                                     <Input
