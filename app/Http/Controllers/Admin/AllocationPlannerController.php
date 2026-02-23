@@ -34,15 +34,19 @@ class AllocationPlannerController extends Controller
             ->orderBy('po_date', 'asc')
             ->get();
 
-        // Build a single zone with all pending orders (no province grouping)
         $zones = [];
+
         if ($pendingOrders->isNotEmpty()) {
             $ordersArray = $pendingOrders->values()->all();
 
-            // ✅ HYBRID rate precompute for display (list order):
-            // first=base_rate, repeat client anywhere=0, else same area as previous=250, other=500
+            /**
+             * HYBRID rate precompute for display (list order):
+             * - first order = base_rate
+             * - repeat client anywhere in the list = 0
+             * - else (not repeat client): same area as previous = 250, other area = 500
+             */
             $ordersWithCost = [];
-            $seenClients = [];
+            $seenClients = [];      // associative set: [clientId => true]
             $previousAreaId = null;
 
             foreach ($ordersArray as $index => $order) {
@@ -52,9 +56,9 @@ class AllocationPlannerController extends Controller
 
                 if ($index === 0) {
                     $dropCost = $baseRate;
-                    if ($currentClientId) $seenClients[] = $currentClientId;
+                    if ($currentClientId) $seenClients[$currentClientId] = true;
                 } else {
-                    if ($currentClientId && in_array($currentClientId, $seenClients)) {
+                    if ($currentClientId && isset($seenClients[$currentClientId])) {
                         $dropCost = 0;
                     } else {
                         if ($currentAreaId && $previousAreaId && $currentAreaId === $previousAreaId) {
@@ -62,7 +66,7 @@ class AllocationPlannerController extends Controller
                         } else {
                             $dropCost = 500;
                         }
-                        if ($currentClientId) $seenClients[] = $currentClientId;
+                        if ($currentClientId) $seenClients[$currentClientId] = true;
                     }
                 }
 
@@ -71,7 +75,7 @@ class AllocationPlannerController extends Controller
                 $ordersWithCost[] = $order;
             }
 
-            // Map orders to array format (KEEP ALL FIELDS UI EXPECTS)
+            // ✅ Map orders to array format (NO DUPLICATE KEYS)
             $mappedOrders = collect($ordersWithCost)->map(function ($order) {
                 return [
                     'id' => $order->id,
@@ -80,8 +84,8 @@ class AllocationPlannerController extends Controller
                     'scheduled_date' => $order->scheduled_date?->format('Y-m-d'),
 
                     // ✅ for frontend compute
-                    'client_id' => $order->client?->id,
-                    'area_id' => $order->client?->area?->id,
+                    'client_id' => (int) ($order->client?->id ?? 0),
+                    'area_id' => (int) ($order->client?->area?->id ?? 0),
                     'base_rate' => (float) ($order->client?->area?->areaGroup?->base_rate ?? 0),
 
                     'client_code' => $order->client?->code,
@@ -207,7 +211,7 @@ class AllocationPlannerController extends Controller
     }
 
     /**
-     * Create a delivery batch from a zone.
+     * Create a delivery batch from selected orders.
      */
     public function allocate(Request $request)
     {
@@ -222,10 +226,11 @@ class AllocationPlannerController extends Controller
         $orderIds = $request->order_ids;
         $plannedDate = $request->planned_date;
 
-        // Get orders and calculate totals
-        $orders = DeliveryOrder::with(['client.area.areaGroup'])->whereIn('id', $orderIds)->orderBy('po_date', 'asc')->get();
+        $orders = DeliveryOrder::with(['client.area.areaGroup'])
+            ->whereIn('id', $orderIds)
+            ->orderBy('po_date', 'asc')
+            ->get();
 
-        // Get first order's area group for batch naming
         $firstOrder = $orders->first();
         $areaGroup = $firstOrder->client?->area?->areaGroup;
 
@@ -249,14 +254,17 @@ class AllocationPlannerController extends Controller
 
             if ($index === 0) {
                 $dropCost = $baseRate;
-                if ($currentClientId) $seenClients[] = $currentClientId;
+                if ($currentClientId) $seenClients[$currentClientId] = true;
             } else {
-                if ($currentClientId && in_array($currentClientId, $seenClients)) {
+                if ($currentClientId && isset($seenClients[$currentClientId])) {
                     $dropCost = 0;
                 } else {
-                    if ($currentAreaId && $previousAreaId && $currentAreaId === $previousAreaId) $dropCost = 250;
-                    else $dropCost = 500;
-                    if ($currentClientId) $seenClients[] = $currentClientId;
+                    if ($currentAreaId && $previousAreaId && $currentAreaId === $previousAreaId) {
+                        $dropCost = 250;
+                    } else {
+                        $dropCost = 500;
+                    }
+                    if ($currentClientId) $seenClients[$currentClientId] = true;
                 }
             }
 
@@ -264,11 +272,9 @@ class AllocationPlannerController extends Controller
             $previousAreaId = $currentAreaId;
         }
 
-        // Calculate max distance
         $maxDistance = $orders->max(fn($o) => $o->client?->distance_km ?? 0);
 
         DB::transaction(function () use ($request, $areaGroup, $orders, $plannedDate, $totalValue, $totalItems, $orderCount, $batchCost, $maxDistance) {
-            // Create the batch
             $batch = DeliveryBatch::create([
                 'batch_number' => DeliveryBatch::generateBatchNumber($plannedDate, $areaGroup->code),
                 'planned_date' => $plannedDate,
@@ -279,7 +285,7 @@ class AllocationPlannerController extends Controller
                 'total_items' => $totalItems,
                 'total_value' => $totalValue,
                 'total_rate' => $batchCost,
-                'total_distance_km' => $maxDistance * 2, // Round trip
+                'total_distance_km' => $maxDistance * 2,
                 'status' => 'planned',
                 'created_by' => Auth::id(),
             ]);
@@ -298,11 +304,14 @@ class AllocationPlannerController extends Controller
                     $additionalRateType = 'none';
                     $additionalRate = 0;
 
-                    if ($orderClientId) $seenClients[] = $orderClientId;
+                    if ($orderClientId) $seenClients[$orderClientId] = true;
                 } else {
-                    if ($orderClientId && in_array($orderClientId, $seenClients)) {
+                    // repeat client anywhere => 0
+                    if ($orderClientId && isset($seenClients[$orderClientId])) {
                         $dropCost = 0;
-                        $additionalRateType = 'same_client';
+
+                        // ✅ IMPORTANT: avoid DB error if column is ENUM (no 'same_client')
+                        $additionalRateType = 'none';
                         $additionalRate = 0;
                     } else {
                         if ($orderAreaId && $previousAreaId && $orderAreaId === $previousAreaId) {
@@ -315,7 +324,7 @@ class AllocationPlannerController extends Controller
                             $additionalRate = 500;
                         }
 
-                        if ($orderClientId) $seenClients[] = $orderClientId;
+                        if ($orderClientId) $seenClients[$orderClientId] = true;
                     }
                 }
 
@@ -347,76 +356,79 @@ class AllocationPlannerController extends Controller
         }
 
         DB::transaction(function () use ($order, $batch) {
-            // Remove order from batch
             $order->update([
                 'batch_id' => null,
                 'base_rate' => 0,
                 'additional_rate_type' => 'none',
                 'additional_rate' => 0,
                 'total_rate' => 0,
-                'status' => 'pending', // Reset status when removed from batch
+                'status' => 'pending',
             ]);
 
-            // Recalculate batch totals
-            $remainingOrders = $batch->orders()->with(['client.area.areaGroup'])->orderBy('po_date', 'asc')->get();
+            $remainingOrders = $batch->orders()
+                ->with(['client.area.areaGroup'])
+                ->orderBy('po_date', 'asc')
+                ->get();
 
             if ($remainingOrders->isEmpty()) {
                 $batch->delete();
-            } else {
-                // ✅ HYBRID recalculation
-                $totalRate = 0;
-                $seenClients = [];
-                $previousAreaId = null;
+                return;
+            }
 
-                foreach ($remainingOrders as $index => $remainingOrder) {
-                    $orderAreaId = $remainingOrder->client?->area?->id;
-                    $orderClientId = $remainingOrder->client?->id;
-                    $orderBaseRate = (float) ($remainingOrder->client?->area?->areaGroup?->base_rate ?? 0);
+            $totalRate = 0;
+            $seenClients = [];
+            $previousAreaId = null;
 
-                    if ($index === 0) {
-                        $dropCost = $orderBaseRate;
+            foreach ($remainingOrders as $index => $remainingOrder) {
+                $orderAreaId = $remainingOrder->client?->area?->id;
+                $orderClientId = $remainingOrder->client?->id;
+                $orderBaseRate = (float) ($remainingOrder->client?->area?->areaGroup?->base_rate ?? 0);
+
+                if ($index === 0) {
+                    $dropCost = $orderBaseRate;
+                    $additionalRateType = 'none';
+                    $additionalRate = 0;
+
+                    if ($orderClientId) $seenClients[$orderClientId] = true;
+                } else {
+                    if ($orderClientId && isset($seenClients[$orderClientId])) {
+                        $dropCost = 0;
+
+                        // ✅ IMPORTANT: avoid DB error if column is ENUM
                         $additionalRateType = 'none';
                         $additionalRate = 0;
-
-                        if ($orderClientId) $seenClients[] = $orderClientId;
                     } else {
-                        if ($orderClientId && in_array($orderClientId, $seenClients)) {
-                            $dropCost = 0;
-                            $additionalRateType = 'same_client';
-                            $additionalRate = 0;
+                        if ($orderAreaId && $previousAreaId && $orderAreaId === $previousAreaId) {
+                            $dropCost = 250;
+                            $additionalRateType = 'drop_same_zone';
+                            $additionalRate = 250;
                         } else {
-                            if ($orderAreaId && $previousAreaId && $orderAreaId === $previousAreaId) {
-                                $dropCost = 250;
-                                $additionalRateType = 'drop_same_zone';
-                                $additionalRate = 250;
-                            } else {
-                                $dropCost = 500;
-                                $additionalRateType = 'drop_other_zone';
-                                $additionalRate = 500;
-                            }
-
-                            if ($orderClientId) $seenClients[] = $orderClientId;
+                            $dropCost = 500;
+                            $additionalRateType = 'drop_other_zone';
+                            $additionalRate = 500;
                         }
+
+                        if ($orderClientId) $seenClients[$orderClientId] = true;
                     }
-
-                    $previousAreaId = $orderAreaId;
-                    $totalRate += $dropCost;
-
-                    $remainingOrder->update([
-                        'base_rate' => $orderBaseRate,
-                        'additional_rate_type' => $additionalRateType,
-                        'additional_rate' => $additionalRate,
-                        'total_rate' => $dropCost,
-                    ]);
                 }
 
-                $batch->update([
-                    'order_count' => $remainingOrders->count(),
-                    'total_items' => $remainingOrders->sum('total_items'),
-                    'total_value' => $remainingOrders->sum('total_amount'),
-                    'total_rate' => $totalRate,
+                $previousAreaId = $orderAreaId;
+                $totalRate += $dropCost;
+
+                $remainingOrder->update([
+                    'base_rate' => $orderBaseRate,
+                    'additional_rate_type' => $additionalRateType,
+                    'additional_rate' => $additionalRate,
+                    'total_rate' => $dropCost,
                 ]);
             }
+
+            $batch->update([
+                'order_count' => $remainingOrders->count(),
+                'total_items' => $remainingOrders->sum('total_items'),
+                'total_value' => $remainingOrders->sum('total_amount'),
+                'total_rate' => $totalRate,
+            ]);
         });
 
         return back()->with('success', 'Order removed from batch');
@@ -428,7 +440,6 @@ class AllocationPlannerController extends Controller
     public function deleteBatch(DeliveryBatch $batch)
     {
         DB::transaction(function () use ($batch) {
-            // Release all orders and reset their status to pending
             $batch->orders()->update([
                 'batch_id' => null,
                 'base_rate' => 0,
@@ -445,7 +456,7 @@ class AllocationPlannerController extends Controller
     }
 
     /**
-     * Start delivery (change batch status to in_transit).
+     * Start delivery.
      */
     public function startDelivery(DeliveryBatch $batch)
     {
