@@ -319,8 +319,8 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   // Recommended vehicle based on selected total value
   const selectedRecommendedVehicle = selectedTotalValue > 150000 ? 'truck' : 'l300';
   const selectedRecommendedVehicleLabel = selectedRecommendedVehicle === 'truck' ? 'Truck' : 'L300 Van';
-
-  // ✅ display values:
+  
+  // display values:
   // - If selectedCount > 0 => show computed totals
   // - Else => show dashes (as requested)
   const displayTotalValue = selectedCount > 0 ? selectedTotalValue : null;
