@@ -714,7 +714,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                         {kpiIsBad ? (
                           <span className="text-red-600 flex items-center gap-1">
                             <AlertTriangle className="h-4 w-4" />
-                            Above 2% threshold
+                            Above 2% KPI
                           </span>
                         ) : (
                           <span className="text-green-700 flex items-center gap-1">
