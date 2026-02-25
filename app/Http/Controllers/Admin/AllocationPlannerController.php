@@ -130,9 +130,9 @@ class AllocationPlannerController extends Controller
             })->values();
 
             $totalValue = (float) $pendingOrders->sum('total_amount');
-            $totalRate = (float) collect($ordersWithCost)->sum(fn($o) => (float) ($o->estimated_drop_cost ?? 0));
+            $totalRate = (float) collect($ordersWithCost)->sum(fn ($o) => (float) ($o->estimated_drop_cost ?? 0));
             $recommendedVehicle = DeliveryBatch::determineVehicleType($totalValue);
-            $overdueCount = $pendingOrders->filter(fn($o) => $o->scheduled_date?->lt(Carbon::today()))->count();
+            $overdueCount = $pendingOrders->filter(fn ($o) => $o->scheduled_date?->lt(Carbon::today()))->count();
 
             $zones[] = [
                 'id' => 'all-orders',
@@ -157,7 +157,7 @@ class AllocationPlannerController extends Controller
             ->get()
             ->map(function ($batch) {
                 $provinceNames = $batch->orders
-                    ->map(fn($o) => $o->client?->province?->name)
+                    ->map(fn ($o) => $o->client?->province?->name)
                     ->filter()
                     ->unique()
                     ->values()
@@ -178,7 +178,7 @@ class AllocationPlannerController extends Controller
                     'total_rate' => $batch->total_rate,
                     'status' => $batch->status,
                     'province_names' => $provinceNames,
-                    'orders' => $batch->orders->map(fn($o) => [
+                    'orders' => $batch->orders->map(fn ($o) => [
                         'id' => $o->id,
                         'po_number' => $o->po_number,
                         'client_code' => $o->client?->code,
@@ -223,12 +223,14 @@ class AllocationPlannerController extends Controller
             'vehicle_id' => 'nullable|exists:vehicles,id',
         ]);
 
-        $orderIds = $request->order_ids;
+        // ✅ IMPORTANT: preserve incoming order sequence for hybrid computation
+        $orderIds = array_values(array_map('intval', $request->order_ids));
         $plannedDate = $request->planned_date;
 
+        // ✅ Order by FIELD(id, ...) to follow exact sequence of $orderIds (MySQL)
         $orders = DeliveryOrder::with(['client.area.areaGroup'])
             ->whereIn('id', $orderIds)
-            ->orderBy('po_date', 'asc')
+            ->orderByRaw('FIELD(id,' . implode(',', $orderIds) . ')')
             ->get();
 
         $firstOrder = $orders->first();
@@ -272,9 +274,19 @@ class AllocationPlannerController extends Controller
             $previousAreaId = $currentAreaId;
         }
 
-        $maxDistance = $orders->max(fn($o) => $o->client?->distance_km ?? 0);
+        $maxDistance = $orders->max(fn ($o) => $o->client?->distance_km ?? 0);
 
-        DB::transaction(function () use ($request, $areaGroup, $orders, $plannedDate, $totalValue, $totalItems, $orderCount, $batchCost, $maxDistance) {
+        DB::transaction(function () use (
+            $request,
+            $areaGroup,
+            $orders,
+            $plannedDate,
+            $totalValue,
+            $totalItems,
+            $orderCount,
+            $batchCost,
+            $maxDistance
+        ) {
             $batch = DeliveryBatch::create([
                 'batch_number' => DeliveryBatch::generateBatchNumber($plannedDate, $areaGroup->code),
                 'planned_date' => $plannedDate,
@@ -290,7 +302,7 @@ class AllocationPlannerController extends Controller
                 'created_by' => Auth::id(),
             ]);
 
-            // ✅ Assign orders to batch + HYBRID per-order rates
+            // ✅ Assign orders to batch + HYBRID per-order rates (same sequence)
             $seenClients = [];
             $previousAreaId = null;
 
@@ -365,10 +377,12 @@ class AllocationPlannerController extends Controller
                 'status' => 'pending',
             ]);
 
+            // ✅ Recompute remaining orders with consistent sequence (distance-sorted)
             $remainingOrders = $batch->orders()
                 ->with(['client.area.areaGroup'])
-                ->orderBy('po_date', 'asc')
-                ->get();
+                ->get()
+                ->sortBy(fn ($o) => $o->client?->distance_km ?? 0)
+                ->values();
 
             if ($remainingOrders->isEmpty()) {
                 $batch->delete();

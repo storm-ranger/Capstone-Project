@@ -26,12 +26,12 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog';
-import { 
-    Truck, 
-    MapPin, 
-    Clock, 
-    AlertTriangle, 
-    ChevronDown, 
+import {
+    Truck,
+    MapPin,
+    Clock,
+    AlertTriangle,
+    ChevronDown,
     Route,
     DollarSign,
     Package,
@@ -40,7 +40,7 @@ import {
     CheckCircle2,
     Loader2
 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 interface Order {
     id: number;
@@ -99,7 +99,7 @@ interface Zone {
 interface AreaGroup {
     id: number;
     name: string;
-    code: string;
+    code: string; // e.g. LGN, BTG
     base_rate: number;
 }
 
@@ -156,12 +156,111 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
     const [processing, setProcessing] = useState(false);
     const [deliveryDate, setDeliveryDate] = useState(new Date().toISOString().split('T')[0]);
 
+    const toNumber = (v: unknown, fallback = 0) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+    };
+
+    const toTime = (dateString: string | null | undefined) => {
+        if (!dateString) return 0;
+        const t = new Date(dateString).getTime();
+        return Number.isFinite(t) ? t : 0;
+    };
+
     // The single zone with all orders (or null if no pending orders)
     const allOrders = zones.length > 0 ? zones[0] : null;
 
+    // ✅ Sort by distance (nearest -> farthest). Tie-breaker: PO Date (oldest first)
+    const sortedAllOrders = useMemo(() => {
+        if (!allOrders) return null;
+
+        const sortedOrders = [...(allOrders.orders ?? [])].sort((a, b) => {
+            const da = toNumber(a.distance_km, 0);
+            const db = toNumber(b.distance_km, 0);
+            if (da !== db) return da - db;
+
+            const ta = toTime(a.po_date);
+            const tb = toTime(b.po_date);
+            return ta - tb;
+        });
+
+        return { ...allOrders, orders: sortedOrders };
+    }, [allOrders]);
+
+    /**
+     * ✅ SAME LOGIC AS ALLOCATION PLANNER (FOR THE WHOLE LIST)
+     * - first stop => base rate (get from areaGroups by zone_code)
+     * - next stops:
+     *    - if same client anywhere => 0
+     *    - else if same area as previous stop => 250
+     *    - else => 500
+     */
+    const routeComputed = useMemo(() => {
+        const dropCostById: Record<number, number> = {};
+        let totalCost = 0;
+
+        if (!sortedAllOrders) return { dropCostById, totalCost };
+
+        // base rate map: areaGroups.code = LGN/BTG -> base_rate (2750 etc.)
+        const baseRateByZone: Record<string, number> = {};
+        (areaGroups ?? []).forEach((g) => {
+            const key = (g.code ?? '').trim().toUpperCase();
+            baseRateByZone[key] = toNumber(g.base_rate, 0);
+        });
+
+        const visitedClientIds = new Set<number>();
+        const visitedClientCodes = new Set<string>();
+        let prevArea = '';
+
+        sortedAllOrders.orders.forEach((o, idx) => {
+            const clientId = toNumber(o.client_id, 0);
+            const clientCode = (o.client_code ?? '').trim();
+
+            const area = (o.area_name ?? '').trim().toLowerCase();
+            const zoneCode = (o.zone_code ?? '').trim().toUpperCase();
+
+            // baseRate priority:
+            // 1) o.base_rate (if backend sends it)
+            // 2) baseRateByZone[zone_code] (LGN/BTG -> 2750)
+            // 3) fallback to o.drop_cost (last resort)
+            const baseRate =
+                toNumber(o.base_rate, 0) > 0
+                    ? toNumber(o.base_rate, 0)
+                    : (baseRateByZone[zoneCode] ?? 0) > 0
+                        ? baseRateByZone[zoneCode]
+                        : toNumber(o.drop_cost, 0);
+
+            let cost = 0;
+
+            if (idx === 0) {
+                cost = baseRate;
+            } else {
+                const repeated =
+                    (clientId !== 0 && visitedClientIds.has(clientId)) ||
+                    (clientId === 0 && clientCode && visitedClientCodes.has(clientCode));
+
+                if (repeated) {
+                    cost = 0;
+                } else {
+                    cost = prevArea && area && prevArea === area ? 250 : 500;
+                }
+            }
+
+            if (clientId !== 0) visitedClientIds.add(clientId);
+            if (clientCode) visitedClientCodes.add(clientCode);
+
+            prevArea = area;
+
+            dropCostById[o.id] = cost;
+            totalCost += cost;
+        });
+
+        return { dropCostById, totalCost };
+    }, [sortedAllOrders, areaGroups]);
+
     const toggleUpcoming = (dateKey: string) => {
-        setOpenUpcoming(prev => 
-            prev.includes(dateKey) 
+        setOpenUpcoming(prev =>
+            prev.includes(dateKey)
                 ? prev.filter(d => d !== dateKey)
                 : [...prev, dateKey]
         );
@@ -174,9 +273,10 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
 
     const handleConfirmDelivery = () => {
         if (!confirmDialog.order) return;
-        
+
         setProcessing(true);
         const order = confirmDialog.order;
+
         router.post(`/admin/route-planner/confirm/${order.id}`, {
             delivery_date: deliveryDate,
             base_rate: order.base_rate,
@@ -187,9 +287,7 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                 setConfirmDialog({ open: false, order: null });
                 setProcessing(false);
             },
-            onError: () => {
-                setProcessing(false);
-            },
+            onError: () => setProcessing(false),
         });
     };
 
@@ -266,6 +364,7 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                             </p>
                         </CardContent>
                     </Card>
+
                     <Card>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Zones Covered</CardTitle>
@@ -273,11 +372,10 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                         </CardHeader>
                         <CardContent>
                             <div className="text-2xl font-bold">{summary.total_zones}</div>
-                            <p className="text-xs text-muted-foreground">
-                                Delivery zones
-                            </p>
+                            <p className="text-xs text-muted-foreground">Delivery zones</p>
                         </CardContent>
                     </Card>
+
                     <Card>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Total Route</CardTitle>
@@ -285,11 +383,10 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                         </CardHeader>
                         <CardContent>
                             <div className="text-2xl font-bold text-blue-600">{summary.total_route_km} km</div>
-                            <p className="text-xs text-muted-foreground">
-                                Est. travel distance
-                            </p>
+                            <p className="text-xs text-muted-foreground">Est. travel distance</p>
                         </CardContent>
                     </Card>
+
                     <Card className={summary.overdue_orders > 0 ? 'border-red-500 bg-red-50' : ''}>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Overdue</CardTitle>
@@ -299,28 +396,26 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                             <div className={`text-2xl font-bold ${summary.overdue_orders > 0 ? 'text-red-600' : ''}`}>
                                 {summary.overdue_orders}
                             </div>
-                            <p className="text-xs text-muted-foreground">
-                                Past due date
-                            </p>
+                            <p className="text-xs text-muted-foreground">Past due date</p>
                         </CardContent>
                     </Card>
+
                     <Card>
                         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                             <CardTitle className="text-sm font-medium">Estimated Cost</CardTitle>
                             <Truck className="h-4 w-4 text-primary" />
                         </CardHeader>
                         <CardContent>
+                            {/* backend summary (optional, hindi natin pinapalitan dito) */}
                             <div className="text-2xl font-bold text-primary">
                                 {formatCurrency(summary.total_estimated_cost)}
                             </div>
-                            <p className="text-xs text-muted-foreground">
-                                Batched trucking cost
-                            </p>
+                            <p className="text-xs text-muted-foreground">Batched trucking cost</p>
                         </CardContent>
                     </Card>
                 </div>
 
-                {/* All Pending Deliveries - Single Card */}
+                {/* All Pending Deliveries */}
                 <div className="space-y-4">
                     <div className="flex items-center justify-between">
                         <h2 className="text-lg font-semibold">All Pending Deliveries</h2>
@@ -335,8 +430,8 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                             />
                         </div>
                     </div>
-                    
-                    {!allOrders ? (
+
+                    {!sortedAllOrders ? (
                         <Card>
                             <CardContent className="py-12 text-center">
                                 <Truck className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -347,51 +442,51 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                             </CardContent>
                         </Card>
                     ) : (
-                        <Card className={allOrders.overdue_count > 0 ? 'border-red-300' : ''}>
+                        <Card className={sortedAllOrders.overdue_count > 0 ? 'border-red-300' : ''}>
                             <CardHeader>
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-3">
-                                        <div className={`p-2 rounded-lg ${allOrders.overdue_count > 0 ? 'bg-red-100' : 'bg-primary/10'}`}>
-                                            <Package className={`h-5 w-5 ${allOrders.overdue_count > 0 ? 'text-red-600' : 'text-primary'}`} />
+                                        <div className={`p-2 rounded-lg ${sortedAllOrders.overdue_count > 0 ? 'bg-red-100' : 'bg-primary/10'}`}>
+                                            <Package className={`h-5 w-5 ${sortedAllOrders.overdue_count > 0 ? 'text-red-600' : 'text-primary'}`} />
                                         </div>
                                         <div>
                                             <CardTitle className="flex items-center gap-2">
                                                 All Pending Deliveries
-                                                {allOrders.overdue_count > 0 && (
+                                                {sortedAllOrders.overdue_count > 0 && (
                                                     <Badge variant="destructive">
-                                                        {allOrders.overdue_count} Overdue
+                                                        {sortedAllOrders.overdue_count} Overdue
                                                     </Badge>
                                                 )}
                                             </CardTitle>
+
+                                            {/* ✅ keep zone summary; removed redundant province badges */}
                                             <CardDescription className="flex flex-wrap gap-1 mt-1">
-                                                {allOrders.province_summary.map((p) => (
-                                                    <Badge key={p.name} variant="outline" className="text-xs">
-                                                        {p.name}: {p.count}
-                                                    </Badge>
-                                                ))}
-                                                <span className="mx-1">•</span>
-                                                {allOrders.zone_summary.map((z) => (
-                                                    <Badge key={z.name} variant="secondary" className="text-xs">
+                                                {sortedAllOrders.zone_summary.map((z) => (
+                                                    <Badge key={`${z.name}-${z.code}`} variant="secondary" className="text-xs">
                                                         {z.name} ({z.code}): {z.count}
                                                     </Badge>
                                                 ))}
                                             </CardDescription>
                                         </div>
                                     </div>
+
                                     <div className="flex items-center gap-6">
                                         <div className="text-right">
-                                            <p className="text-2xl font-bold">{allOrders.order_count}</p>
+                                            <p className="text-2xl font-bold">{sortedAllOrders.order_count}</p>
                                             <p className="text-xs text-muted-foreground">Orders</p>
                                         </div>
+
                                         <div className="text-right">
+                                            {/* ✅ computed est cost */}
                                             <p className="text-2xl font-bold text-primary">
-                                                {formatCurrency(allOrders.estimated_cost)}
+                                                {formatCurrency(routeComputed.totalCost)}
                                             </p>
                                             <p className="text-xs text-muted-foreground">Est. Cost</p>
                                         </div>
                                     </div>
                                 </div>
                             </CardHeader>
+
                             <CardContent className="pt-0">
                                 <div className="rounded-md border">
                                     <Table>
@@ -414,118 +509,139 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                                                 <TableHead className="w-20">Action</TableHead>
                                             </TableRow>
                                         </TableHeader>
+
                                         <TableBody>
-                                            {allOrders.orders.map((order) => (
-                                                <TableRow 
-                                                    key={order.id}
-                                                    className={order.is_overdue ? 'bg-red-50' : ''}
-                                                >
-                                                    <TableCell className="font-medium">
-                                                        <div className={`flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold ${
-                                                            order.route_sequence === 1 
-                                                                ? 'bg-primary text-primary-foreground' 
-                                                                : 'bg-muted text-muted-foreground'
-                                                        }`}>
-                                                            {order.route_sequence}
-                                                        </div>
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        <span className="font-mono text-sm" title={order.products}>
-                                                            {order.primary_product}
-                                                        </span>
-                                                    </TableCell>
-                                                    <TableCell className="font-mono font-medium">
-                                                        {order.po_number}
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        <div className="flex flex-col">
-                                                            <span className="text-sm">{formatDate(order.po_date)}</span>
-                                                            {order.days_since_po !== null && order.days_since_po > 0 && (
-                                                                <span className="text-xs text-muted-foreground">
-                                                                    {order.days_since_po}d ago
-                                                                </span>
+                                            {sortedAllOrders.orders.map((order, idx) => {
+                                                const displaySeq = idx + 1;
+                                                const isFirst = idx === 0;
+
+                                                return (
+                                                    <TableRow
+                                                        key={order.id}
+                                                        className={order.is_overdue ? 'bg-red-50' : ''}
+                                                    >
+                                                        <TableCell className="font-medium">
+                                                            <div className={`flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold ${
+                                                                isFirst
+                                                                    ? 'bg-primary text-primary-foreground'
+                                                                    : 'bg-muted text-muted-foreground'
+                                                            }`}>
+                                                                {displaySeq}
+                                                            </div>
+                                                        </TableCell>
+
+                                                        <TableCell>
+                                                            <span className="font-mono text-sm" title={order.products}>
+                                                                {order.primary_product}
+                                                            </span>
+                                                        </TableCell>
+
+                                                        <TableCell className="font-mono font-medium">
+                                                            {order.po_number}
+                                                        </TableCell>
+
+                                                        <TableCell>
+                                                            <div className="flex flex-col">
+                                                                <span className="text-sm">{formatDate(order.po_date)}</span>
+                                                                {order.days_since_po !== null && order.days_since_po > 0 && (
+                                                                    <span className="text-xs text-muted-foreground">
+                                                                        {order.days_since_po}d ago
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </TableCell>
+
+                                                        <TableCell className="font-mono">{order.client_code}</TableCell>
+
+                                                        <TableCell>
+                                                            <span className="text-sm">{order.province_name}</span>
+                                                        </TableCell>
+
+                                                        {/* ✅ zone acronym */}
+                                                        <TableCell>
+                                                            <Badge variant="secondary" className="text-xs font-mono">
+                                                                {order.zone_code}
+                                                            </Badge>
+                                                        </TableCell>
+
+                                                        <TableCell>{order.area_name}</TableCell>
+
+                                                        <TableCell className="text-right">
+                                                            <div className="flex flex-col">
+                                                                <span className="font-medium">{toNumber(order.distance_km, 0).toFixed(2)} km</span>
+                                                                {toNumber(order.leg_distance_km, 0) > 0 && (
+                                                                    <span className="text-xs text-muted-foreground">
+                                                                        +{toNumber(order.leg_distance_km, 0).toFixed(1)} km
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </TableCell>
+
+                                                        <TableCell>
+                                                            {order.cutoff_time ? (
+                                                                <Badge variant="outline" className="text-xs">
+                                                                    {formatTime(order.cutoff_time)}
+                                                                </Badge>
+                                                            ) : '-'}
+                                                        </TableCell>
+
+                                                        {/* ✅ computed drop cost */}
+                                                        <TableCell className="text-right">
+                                                            <span className={isFirst ? 'font-medium' : 'text-muted-foreground'}>
+                                                                {formatCurrency(toNumber(routeComputed.dropCostById[order.id], 0))}
+                                                            </span>
+                                                        </TableCell>
+
+                                                        <TableCell className="text-right">{order.total_items}</TableCell>
+
+                                                        <TableCell className="text-right font-medium">
+                                                            {formatCurrency(order.total_amount)}
+                                                        </TableCell>
+
+                                                        <TableCell>
+                                                            {order.is_overdue ? (
+                                                                <Badge variant="destructive" className="gap-1">
+                                                                    <AlertTriangle className="h-3 w-3" />
+                                                                    Overdue
+                                                                </Badge>
+                                                            ) : order.days_until_due === 0 ? (
+                                                                <Badge variant="default" className="bg-yellow-500 gap-1">
+                                                                    <Clock className="h-3 w-3" />
+                                                                    Today
+                                                                </Badge>
+                                                            ) : (
+                                                                <Badge variant="outline">
+                                                                    {order.days_until_due}d
+                                                                </Badge>
                                                             )}
-                                                        </div>
-                                                    </TableCell>
-                                                    <TableCell className="font-mono">
-                                                        {order.client_code}
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        <span className="text-sm">{order.province_name}</span>
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        <Badge variant="secondary" className="text-xs font-mono">
-                                                            {order.zone_code}
-                                                        </Badge>
-                                                    </TableCell>
-                                                    <TableCell>{order.area_name}</TableCell>
-                                                    <TableCell className="text-right">
-                                                        <div className="flex flex-col">
-                                                            <span className="font-medium">{order.distance_km} km</span>
-                                                            {order.leg_distance_km > 0 && (
-                                                                <span className="text-xs text-muted-foreground">
-                                                                    +{order.leg_distance_km.toFixed(1)} km
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        {order.cutoff_time ? (
-                                                            <Badge variant="outline" className="text-xs">
-                                                                {formatTime(order.cutoff_time)}
-                                                            </Badge>
-                                                        ) : '-'}
-                                                    </TableCell>
-                                                    <TableCell className="text-right">
-                                                        <span className={order.route_sequence === 1 ? 'font-medium' : 'text-muted-foreground'}>
-                                                            {formatCurrency(order.drop_cost)}
-                                                        </span>
-                                                    </TableCell>
-                                                    <TableCell className="text-right">{order.total_items}</TableCell>
-                                                    <TableCell className="text-right font-medium">
-                                                        {formatCurrency(order.total_amount)}
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        {order.is_overdue ? (
-                                                            <Badge variant="destructive" className="gap-1">
-                                                                <AlertTriangle className="h-3 w-3" />
-                                                                Overdue
-                                                            </Badge>
-                                                        ) : order.days_until_due === 0 ? (
-                                                            <Badge variant="default" className="bg-yellow-500 gap-1">
-                                                                <Clock className="h-3 w-3" />
-                                                                Today
-                                                            </Badge>
-                                                        ) : (
-                                                            <Badge variant="outline">
-                                                                {order.days_until_due}d
-                                                            </Badge>
-                                                        )}
-                                                    </TableCell>
-                                                    <TableCell>
-                                                        <Button
-                                                            size="sm"
-                                                            variant="outline"
-                                                            onClick={() => setConfirmDialog({ open: true, order })}
-                                                        >
-                                                            <CheckCircle2 className="h-4 w-4" />
-                                                        </Button>
-                                                    </TableCell>
-                                                </TableRow>
-                                            ))}
+                                                        </TableCell>
+
+                                                        <TableCell>
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                onClick={() => setConfirmDialog({ open: true, order })}
+                                                            >
+                                                                <CheckCircle2 className="h-4 w-4" />
+                                                            </Button>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                );
+                                            })}
                                         </TableBody>
                                     </Table>
                                 </div>
+
                                 <div className="mt-4 flex items-center justify-between text-sm">
                                     <div className="flex gap-6 text-muted-foreground">
-                                        <span>Route Distance: <strong>{allOrders.total_route_km} km</strong> (incl. return)</span>
-                                        <span>Farthest: <strong>{allOrders.max_distance} km</strong></span>
-                                        <span>Items: <strong>{allOrders.total_items}</strong></span>
-                                        <span>Value: <strong>{formatCurrency(allOrders.total_amount)}</strong></span>
+                                        <span>Route Distance: <strong>{sortedAllOrders.total_route_km} km</strong> (incl. return)</span>
+                                        <span>Farthest: <strong>{sortedAllOrders.max_distance} km</strong></span>
+                                        <span>Items: <strong>{sortedAllOrders.total_items}</strong></span>
+                                        <span>Value: <strong>{formatCurrency(sortedAllOrders.total_amount)}</strong></span>
                                     </div>
                                     <div className="text-right">
                                         <span className="text-muted-foreground">Estimated Cost: </span>
-                                        <span className="font-bold text-primary">{formatCurrency(allOrders.estimated_cost)}</span>
+                                        <span className="font-bold text-primary">{formatCurrency(routeComputed.totalCost)}</span>
                                     </div>
                                 </div>
                             </CardContent>
@@ -628,6 +744,7 @@ export default function RoutePlannerIndex({ zones, summary, upcomingOrders, area
                                                 </div>
                                             </CardHeader>
                                         </CollapsibleTrigger>
+
                                         <CollapsibleContent>
                                             <CardContent className="pt-0">
                                                 <Table>
