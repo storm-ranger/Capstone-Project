@@ -282,11 +282,6 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   // ✅ HYBRID RATE CALC (ONLY FOR SELECTED)
   // =============================
   const selectionComputed = useMemo(() => {
-    /**
-     * returns:
-     * - dropCostById: { [orderId]: dropCost }
-     * - totalCost
-     */
     const dropCostById: Record<number, number> = {};
     let totalCost = 0;
 
@@ -303,11 +298,9 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
       if (idx === 0) {
         cost = baseRate;
       } else {
-        // repeat client anywhere => 0
         if (clientId !== 0 && visitedClientIds.has(clientId)) {
           cost = 0;
         } else {
-          // same area vs other area (compare to previous selected stop)
           if (areaId !== 0 && prevAreaId !== 0 && areaId === prevAreaId) cost = 250;
           else cost = 500;
         }
@@ -342,13 +335,9 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count);
 
-  // Recommended vehicle based on selected total value
   const selectedRecommendedVehicle = selectedTotalValue > 150000 ? 'truck' : 'l300';
   const selectedRecommendedVehicleLabel = selectedRecommendedVehicle === 'truck' ? 'Truck' : 'L300 Van';
 
-  // display values:
-  // - If selectedCount > 0 => show computed totals
-  // - Else => show dashes (as requested)
   const displayTotalValue = selectedCount > 0 ? selectedTotalValue : null;
   const displayBatchCost = selectedCount > 0 ? selectedBatchCost : null;
   const displayRecommendedVehicle = selectedCount > 0 ? selectedRecommendedVehicle : null;
@@ -356,7 +345,6 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   const displayOverdueCount = selectedCount > 0 ? selectedOverdueCount : 0;
   const displayProvinceSummary = selectedCount > 0 ? selectedProvinceSummaryList : allOrders?.province_summary ?? [];
 
-  // KPI (Rate/Value) %
   const kpiPercent =
     selectedCount > 0 && selectedTotalValue > 0 ? (selectedBatchCost / selectedTotalValue) * 100 : 0;
 
@@ -366,7 +354,9 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   // ACTIONS
   // =============================
   const toggleBatch = (batchId: number) => {
-    setOpenBatches((prev) => (prev.includes(batchId) ? prev.filter((id) => id !== batchId) : [...prev, batchId]));
+    setOpenBatches((prev) =>
+      prev.includes(batchId) ? prev.filter((id) => id !== batchId) : [...prev, batchId]
+    );
   };
 
   const handleDateChange = (newDate: string) => {
@@ -431,13 +421,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   };
 
   const handleStartDelivery = (batchId: number) => {
-    router.post(
-      `/admin/allocation-planner/batches/${batchId}/start`,
-      {},
-      {
-        preserveScroll: true,
-      }
-    );
+    router.post(`/admin/allocation-planner/batches/${batchId}/start`, {}, { preserveScroll: true });
   };
 
   const handleDeleteBatch = () => {
@@ -460,9 +444,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
     setProcessing(true);
     router.post(
       `/admin/allocation-planner/batches/${completeDialog.batch.id}/complete`,
-      {
-        delivery_date: deliveryDate,
-      },
+      { delivery_date: deliveryDate },
       {
         preserveScroll: true,
         onSuccess: () => {
@@ -632,7 +614,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                 </CardHeader>
 
                 <CardContent className="pt-0 pb-3">
-                  {/* Province badges */}
+                  {/* Province badges (kept for summary; table column removed) */}
                   <div className="flex flex-wrap gap-1 mb-3">
                     {displayProvinceSummary.map((ps) => (
                       <Badge key={ps.name} variant="outline" className="text-xs">
@@ -644,19 +626,16 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        {/* ✅ keep checkbox */}
                         <TableHead className="w-10">
                           <input type="checkbox" checked={allSelected} onChange={toggleAllOrders} />
                         </TableHead>
 
-                        {/* ✅ replaced PO Number -> Distance */}
-                        <TableHead className="text-right">Distance</TableHead>
-
-                        {/* ✅ Client now includes PO Number (small) */}
+                        {/* ✅ required arrangement */}
                         <TableHead>Client</TableHead>
-
-                        <TableHead>Province</TableHead>
                         <TableHead>Area</TableHead>
                         <TableHead>Zone</TableHead>
+                        <TableHead className="text-right">Distance</TableHead>
                         <TableHead className="text-right">Rate</TableHead>
                         <TableHead className="text-right">Items</TableHead>
                         <TableHead className="text-right">Value</TableHead>
@@ -674,12 +653,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                             />
                           </TableCell>
 
-                          {/* ✅ Distance column */}
-                          <TableCell className="text-right font-medium">
-                            {toNumber(order.distance_km, 0).toFixed(2)} km
-                          </TableCell>
-
-                          {/* ✅ Client column with PO underneath */}
+                          {/* 1. Client (with PO below, overdue icon) */}
                           <TableCell>
                             <div className="flex items-center gap-1">
                               <span className="font-medium">{order.client_code}</span>
@@ -688,36 +662,41 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                             <div className="text-xs text-muted-foreground font-mono">{order.po_number}</div>
                           </TableCell>
 
-                          <TableCell>
-                            <Badge variant="outline" className="text-xs">
-                              {order.province_name}
-                            </Badge>
-                          </TableCell>
-
+                          {/* 2. Area */}
                           <TableCell>{order.area_name}</TableCell>
 
+                          {/* 3. Zone */}
                           <TableCell>
                             <Badge variant="secondary" className="text-xs">
                               {order.zone_name}
                             </Badge>
                           </TableCell>
 
-                          {/* ✅ Rate should only show when checked */}
+                          {/* 4. Distance */}
+                          <TableCell className="text-right font-medium">
+                            {toNumber(order.distance_km, 0).toFixed(2)} km
+                          </TableCell>
+
+                          {/* 5. Rate (only when checked) */}
                           <TableCell className="text-right font-medium">
                             {selectedOrderIds.has(order.id)
                               ? formatCurrency(toNumber(selectionComputed.dropCostById[order.id], 0))
                               : '—'}
                           </TableCell>
 
+                          {/* 6. Items */}
                           <TableCell className="text-right">{toNumber(order.total_items, 0)}</TableCell>
 
-                          <TableCell className="text-right">{formatCurrency(toNumber(order.total_amount, 0))}</TableCell>
+                          {/* 7. Value */}
+                          <TableCell className="text-right">
+                            {formatCurrency(toNumber(order.total_amount, 0))}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
 
-                  {/* ✅ Decision-making KPI line */}
+                  {/* KPI line */}
                   <div className="mt-3 flex items-center justify-between text-sm">
                     {selectedCount === 0 ? (
                       <span className="text-muted-foreground">Tip: Check orders to compute totals</span>
@@ -762,7 +741,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                     )}
                   </div>
 
-                  {/* ✅ Bottom footer: show only when selected, else dash */}
+                  {/* Bottom footer */}
                   <div className="mt-3 pt-3 border-t flex justify-between text-sm">
                     <div className="flex gap-4">
                       <span className="text-muted-foreground">
@@ -805,7 +784,11 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
               </Card>
             ) : (
               batches.map((batch) => (
-                <Collapsible key={batch.id} open={openBatches.includes(batch.id)} onOpenChange={() => toggleBatch(batch.id)}>
+                <Collapsible
+                  key={batch.id}
+                  open={openBatches.includes(batch.id)}
+                  onOpenChange={() => toggleBatch(batch.id)}
+                >
                   <Card>
                     <CollapsibleTrigger asChild>
                       <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors py-4">
@@ -828,8 +811,10 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                 {getStatusBadge(batch.status)}
                               </CardTitle>
                               <CardDescription className="text-xs">
-                                {batch.province_names.length > 1 ? batch.province_names.join(' + ') : batch.area_group_name} •{' '}
-                                {batch.vehicle_type_label} • {batch.order_count} orders
+                                {batch.province_names.length > 1
+                                  ? batch.province_names.join(' + ')
+                                  : batch.area_group_name}{' '}
+                                • {batch.vehicle_type_label} • {batch.order_count} orders
                               </CardDescription>
                             </div>
                           </div>
@@ -861,7 +846,9 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                               <TableRow key={order.id}>
                                 <TableCell className="font-mono text-sm">{order.po_number}</TableCell>
                                 <TableCell>{order.client_code}</TableCell>
-                                <TableCell className="text-right">{formatCurrency(toNumber(order.total_amount, 0))}</TableCell>
+                                <TableCell className="text-right">
+                                  {formatCurrency(toNumber(order.total_amount, 0))}
+                                </TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
@@ -869,7 +856,10 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
 
                         <div className="mt-3 pt-3 border-t flex justify-between items-center">
                           <span className="text-sm text-muted-foreground">
-                            Rate: <span className="font-medium text-foreground">{formatCurrency(toNumber(batch.total_rate, 0))}</span>
+                            Rate:{' '}
+                            <span className="font-medium text-foreground">
+                              {formatCurrency(toNumber(batch.total_rate, 0))}
+                            </span>
                           </span>
 
                           <div className="flex gap-2">
@@ -880,7 +870,11 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                   Start
                                 </Button>
 
-                                <Button size="sm" variant="destructive" onClick={() => setDeleteDialog({ open: true, batch })}>
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => setDeleteDialog({ open: true, batch })}
+                                >
                                   <Trash2 className="h-3 w-3" />
                                 </Button>
                               </>
@@ -974,7 +968,9 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
             {selectedVehicleType && selectedCount > 0 && (
               <div
                 className={`p-3 rounded-lg ${
-                  selectedVehicleType === selectedRecommendedVehicle ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'
+                  selectedVehicleType === selectedRecommendedVehicle
+                    ? 'bg-green-50 text-green-700'
+                    : 'bg-yellow-50 text-yellow-700'
                 }`}
               >
                 {selectedVehicleType === selectedRecommendedVehicle ? (
@@ -1005,12 +1001,16 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
       </Dialog>
 
       {/* Delete Dialog */}
-      <Dialog open={deleteDialog.open} onOpenChange={(open) => !open && setDeleteDialog({ open: false, batch: null })}>
+      <Dialog
+        open={deleteDialog.open}
+        onOpenChange={(open) => !open && setDeleteDialog({ open: false, batch: null })}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete Batch</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete batch {deleteDialog.batch?.batch_number}? All {deleteDialog.batch?.order_count} orders will be released back to unallocated.
+              Are you sure you want to delete batch {deleteDialog.batch?.batch_number}? All{' '}
+              {deleteDialog.batch?.order_count} orders will be released back to unallocated.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1026,7 +1026,10 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
       </Dialog>
 
       {/* Complete Dialog */}
-      <Dialog open={completeDialog.open} onOpenChange={(open) => !open && setCompleteDialog({ open: false, batch: null })}>
+      <Dialog
+        open={completeDialog.open}
+        onOpenChange={(open) => !open && setCompleteDialog({ open: false, batch: null })}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Complete Delivery</DialogTitle>
