@@ -59,19 +59,26 @@ export function Combobox({
           role="combobox"
           aria-expanded={open}
           className={cn(
-            "w-full justify-between font-normal",
+            // make height consistent with Input (h-10)
+            "w-full h-10 justify-between font-normal px-3",
+            // better text alignment inside
+            "items-center",
             !value && "text-muted-foreground",
             className
           )}
           disabled={disabled}
         >
-          <span className="truncate">
+          <span className="truncate leading-none">
             {selectedOption ? selectedOption.label : placeholder}
           </span>
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="min-w-[--radix-popover-trigger-width] max-w-[500px] p-0" align="start">
+
+      <PopoverContent
+        className="min-w-[--radix-popover-trigger-width] max-w-[500px] p-0"
+        align="start"
+      >
         <Command>
           <CommandInput placeholder={searchPlaceholder} />
           <CommandList>
@@ -80,7 +87,7 @@ export function Combobox({
               {options.map((option) => (
                 <CommandItem
                   key={option.value}
-                  value={`${option.label} ${option.sublabel || ''}`}
+                  value={`${option.label} ${option.sublabel || ""}`}
                   onSelect={() => {
                     onValueChange?.(option.value === value ? "" : option.value)
                     setOpen(false)
