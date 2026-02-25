@@ -50,7 +50,7 @@ import {
   Play,
   Trash2,
   BoxIcon,
-  Settings2
+  Settings2,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
@@ -182,8 +182,6 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
 
   const [deliveryDate, setDeliveryDate] = useState(new Date().toISOString().split('T')[0]);
 
-  const allOrders = zones.length > 0 ? zones[0] : null;
-
   // =============================
   // HELPERS
   // =============================
@@ -207,11 +205,23 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'planned':
-        return <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">Planned</Badge>;
+        return (
+          <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+            Planned
+          </Badge>
+        );
       case 'in_transit':
-        return <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">In Transit</Badge>;
+        return (
+          <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">
+            In Transit
+          </Badge>
+        );
       case 'completed':
-        return <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">Completed</Badge>;
+        return (
+          <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+            Completed
+          </Badge>
+        );
       case 'cancelled':
         return <Badge variant="destructive">Cancelled</Badge>;
       default:
@@ -220,12 +230,28 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   };
 
   // =============================
+  // ✅ ALL ORDERS (SORTED BY DISTANCE)
+  // =============================
+  const allOrders = useMemo(() => {
+    if (zones.length === 0) return null;
+
+    const z = zones[0];
+
+    // ✅ sort orders by distance (nearest -> farthest)
+    const sortedOrders = [...(z.orders ?? [])].sort(
+      (a, b) => toNumber(a.distance_km, 0) - toNumber(b.distance_km, 0)
+    );
+
+    return { ...z, orders: sortedOrders };
+  }, [zones]);
+
+  // =============================
   // ORDER SELECTION
   // =============================
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<number>>(new Set());
 
   const toggleOrder = (id: number) => {
-    setSelectedOrderIds(prev => {
+    setSelectedOrderIds((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
@@ -234,8 +260,8 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
 
   const clearSelected = () => setSelectedOrderIds(new Set<number>());
 
-  const allOrderIds = allOrders ? allOrders.orders.map(o => o.id) : [];
-  const allSelected = allOrderIds.length > 0 && allOrderIds.every(id => selectedOrderIds.has(id));
+  const allOrderIds = allOrders ? allOrders.orders.map((o) => o.id) : [];
+  const allSelected = allOrderIds.length > 0 && allOrderIds.every((id) => selectedOrderIds.has(id));
 
   const toggleAllOrders = () => {
     setSelectedOrderIds(() => {
@@ -247,7 +273,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   // Selected orders in the same list order (important for sequential compute)
   const selectedOrders = useMemo(() => {
     if (!allOrders) return [];
-    return allOrders.orders.filter(o => selectedOrderIds.has(o.id));
+    return allOrders.orders.filter((o) => selectedOrderIds.has(o.id));
   }, [allOrders, selectedOrderIds]);
 
   const selectedCount = selectedOrders.length;
@@ -319,7 +345,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   // Recommended vehicle based on selected total value
   const selectedRecommendedVehicle = selectedTotalValue > 150000 ? 'truck' : 'l300';
   const selectedRecommendedVehicleLabel = selectedRecommendedVehicle === 'truck' ? 'Truck' : 'L300 Van';
-  
+
   // display values:
   // - If selectedCount > 0 => show computed totals
   // - Else => show dashes (as requested)
@@ -328,12 +354,11 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   const displayRecommendedVehicle = selectedCount > 0 ? selectedRecommendedVehicle : null;
   const displayRecommendedVehicleLabel = selectedCount > 0 ? selectedRecommendedVehicleLabel : null;
   const displayOverdueCount = selectedCount > 0 ? selectedOverdueCount : 0;
-  const displayProvinceSummary = selectedCount > 0 ? selectedProvinceSummaryList : (allOrders?.province_summary ?? []);
+  const displayProvinceSummary = selectedCount > 0 ? selectedProvinceSummaryList : allOrders?.province_summary ?? [];
 
   // KPI (Rate/Value) %
-  const kpiPercent = selectedCount > 0 && selectedTotalValue > 0
-    ? (selectedBatchCost / selectedTotalValue) * 100
-    : 0;
+  const kpiPercent =
+    selectedCount > 0 && selectedTotalValue > 0 ? (selectedBatchCost / selectedTotalValue) * 100 : 0;
 
   const kpiIsBad = selectedCount > 0 && kpiPercent >= 2;
 
@@ -341,11 +366,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
   // ACTIONS
   // =============================
   const toggleBatch = (batchId: number) => {
-    setOpenBatches(prev =>
-      prev.includes(batchId)
-        ? prev.filter(id => id !== batchId)
-        : [...prev, batchId]
-    );
+    setOpenBatches((prev) => (prev.includes(batchId) ? prev.filter((id) => id !== batchId) : [...prev, batchId]));
   };
 
   const handleDateChange = (newDate: string) => {
@@ -362,19 +383,23 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
 
     setProcessing(true);
 
-    router.post('/admin/allocation-planner/allocate', {
-      order_ids: orderIds,
-      planned_date: date,
-      vehicle_type: selectedRecommendedVehicle,
-      vehicle_id: null,
-    }, {
-      preserveScroll: true,
-      onSuccess: () => {
-        setProcessing(false);
-        clearSelected();
+    router.post(
+      '/admin/allocation-planner/allocate',
+      {
+        order_ids: orderIds,
+        planned_date: date,
+        vehicle_type: displayRecommendedVehicle ?? selectedRecommendedVehicle,
+        vehicle_id: null,
       },
-      onError: () => setProcessing(false),
-    });
+      {
+        preserveScroll: true,
+        onSuccess: () => {
+          setProcessing(false);
+          clearSelected();
+        },
+        onError: () => setProcessing(false),
+      }
+    );
   };
 
   const handleManualAllocate = () => {
@@ -385,26 +410,34 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
 
     setProcessing(true);
 
-    router.post('/admin/allocation-planner/allocate', {
-      order_ids: orderIds,
-      planned_date: date,
-      vehicle_type: selectedVehicleType,
-      vehicle_id: selectedVehicleId || null,
-    }, {
-      preserveScroll: true,
-      onSuccess: () => {
-        setAllocateDialog(false);
-        setProcessing(false);
-        clearSelected();
+    router.post(
+      '/admin/allocation-planner/allocate',
+      {
+        order_ids: orderIds,
+        planned_date: date,
+        vehicle_type: selectedVehicleType,
+        vehicle_id: selectedVehicleId || null,
       },
-      onError: () => setProcessing(false),
-    });
+      {
+        preserveScroll: true,
+        onSuccess: () => {
+          setAllocateDialog(false);
+          setProcessing(false);
+          clearSelected();
+        },
+        onError: () => setProcessing(false),
+      }
+    );
   };
 
   const handleStartDelivery = (batchId: number) => {
-    router.post(`/admin/allocation-planner/batches/${batchId}/start`, {}, {
-      preserveScroll: true,
-    });
+    router.post(
+      `/admin/allocation-planner/batches/${batchId}/start`,
+      {},
+      {
+        preserveScroll: true,
+      }
+    );
   };
 
   const handleDeleteBatch = () => {
@@ -425,16 +458,20 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
     if (!completeDialog.batch) return;
 
     setProcessing(true);
-    router.post(`/admin/allocation-planner/batches/${completeDialog.batch.id}/complete`, {
-      delivery_date: deliveryDate,
-    }, {
-      preserveScroll: true,
-      onSuccess: () => {
-        setCompleteDialog({ open: false, batch: null });
-        setProcessing(false);
+    router.post(
+      `/admin/allocation-planner/batches/${completeDialog.batch.id}/complete`,
+      {
+        delivery_date: deliveryDate,
       },
-      onError: () => setProcessing(false),
-    });
+      {
+        preserveScroll: true,
+        onSuccess: () => {
+          setCompleteDialog({ open: false, batch: null });
+          setProcessing(false);
+        },
+        onError: () => setProcessing(false),
+      }
+    );
   };
 
   return (
@@ -446,12 +483,12 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Allocation Planner</h1>
-            <p className="text-muted-foreground">
-              Assign vehicles to delivery batches based on goods value
-            </p>
+            <p className="text-muted-foreground">Assign vehicles to delivery batches based on goods value</p>
           </div>
           <div className="flex items-center gap-3">
-            <Label htmlFor="date" className="text-sm">Plan for:</Label>
+            <Label htmlFor="date" className="text-sm">
+              Plan for:
+            </Label>
             <Input
               id="date"
               type="date"
@@ -497,9 +534,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">Up to ₱150,000</div>
-              <p className="text-xs text-muted-foreground">
-                Use L300 Van for batches within this value range
-              </p>
+              <p className="text-xs text-muted-foreground">Use L300 Van for batches within this value range</p>
             </CardContent>
           </Card>
 
@@ -510,9 +545,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">Up to ₱250,000</div>
-              <p className="text-xs text-muted-foreground">
-                Use Truck for batches beyond L300 capacity
-              </p>
+              <p className="text-xs text-muted-foreground">Use Truck for batches beyond L300 capacity</p>
             </CardContent>
           </Card>
         </div>
@@ -530,9 +563,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                 <CardContent className="py-8 text-center">
                   <CheckCircle2 className="h-10 w-10 mx-auto text-green-500 mb-3" />
                   <p className="text-lg font-medium">All orders allocated!</p>
-                  <p className="text-sm text-muted-foreground">
-                    No pending orders need vehicle assignment
-                  </p>
+                  <p className="text-sm text-muted-foreground">No pending orders need vehicle assignment</p>
                 </CardContent>
               </Card>
             ) : (
@@ -561,17 +592,13 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                             <>
                               {formatCurrency(displayTotalValue)} • {displayRecommendedVehicleLabel}
                             </>
-                          ) :null}
+                          ) : null}
                         </CardDescription>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        onClick={handleAutoAllocate}
-                        disabled={processing || selectedCount === 0}
-                      >
+                      <Button size="sm" onClick={handleAutoAllocate} disabled={processing || selectedCount === 0}>
                         {processing ? (
                           <Loader2 className="h-3 w-3 animate-spin mr-1" />
                         ) : (
@@ -618,14 +645,15 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                     <TableHeader>
                       <TableRow>
                         <TableHead className="w-10">
-                          <input
-                            type="checkbox"
-                            checked={allSelected}
-                            onChange={toggleAllOrders}
-                          />
+                          <input type="checkbox" checked={allSelected} onChange={toggleAllOrders} />
                         </TableHead>
-                        <TableHead>PO Number</TableHead>
+
+                        {/* ✅ replaced PO Number -> Distance */}
+                        <TableHead className="text-right">Distance</TableHead>
+
+                        {/* ✅ Client now includes PO Number (small) */}
                         <TableHead>Client</TableHead>
+
                         <TableHead>Province</TableHead>
                         <TableHead>Area</TableHead>
                         <TableHead>Zone</TableHead>
@@ -646,14 +674,19 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                             />
                           </TableCell>
 
-                          <TableCell className="font-mono text-sm">
-                            {order.po_number}
-                            {order.is_overdue && (
-                              <AlertTriangle className="inline h-3 w-3 text-red-500 ml-1" />
-                            )}
+                          {/* ✅ Distance column */}
+                          <TableCell className="text-right font-medium">
+                            {toNumber(order.distance_km, 0).toFixed(2)} km
                           </TableCell>
 
-                          <TableCell>{order.client_code}</TableCell>
+                          {/* ✅ Client column with PO underneath */}
+                          <TableCell>
+                            <div className="flex items-center gap-1">
+                              <span className="font-medium">{order.client_code}</span>
+                              {order.is_overdue && <AlertTriangle className="inline h-3 w-3 text-red-500" />}
+                            </div>
+                            <div className="text-xs text-muted-foreground font-mono">{order.po_number}</div>
+                          </TableCell>
 
                           <TableCell>
                             <Badge variant="outline" className="text-xs">
@@ -678,26 +711,23 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
 
                           <TableCell className="text-right">{toNumber(order.total_items, 0)}</TableCell>
 
-                          <TableCell className="text-right">
-                            {formatCurrency(toNumber(order.total_amount, 0))}
-                          </TableCell>
+                          <TableCell className="text-right">{formatCurrency(toNumber(order.total_amount, 0))}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
 
-                  {/* ✅ Decision-making KPI line (replaces Tip line) */}
+                  {/* ✅ Decision-making KPI line */}
                   <div className="mt-3 flex items-center justify-between text-sm">
                     {selectedCount === 0 ? (
-                      <span className="text-muted-foreground">
-                        Tip: Check orders to compute totals
-                      </span>
+                      <span className="text-muted-foreground">Tip: Check orders to compute totals</span>
                     ) : (
                       <div className="flex items-center gap-2">
                         <span className="text-muted-foreground">
                           Selected: <span className="font-medium text-foreground">{selectedCount}</span>
                           &nbsp;• Items: <span className="font-medium text-foreground">{selectedTotalItems}</span>
-                          &nbsp;• Value: <span className="font-medium text-foreground">{formatCurrency(selectedTotalValue)}</span>
+                          &nbsp;• Value:{' '}
+                          <span className="font-medium text-foreground">{formatCurrency(selectedTotalValue)}</span>
                         </span>
 
                         <Badge
@@ -743,9 +773,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                       </span>
                       <span className="text-muted-foreground">
                         Recommended:{' '}
-                        <span className="font-medium text-foreground">
-                          {displayRecommendedVehicleLabel ?? '—'}
-                        </span>
+                        <span className="font-medium text-foreground">{displayRecommendedVehicleLabel ?? '—'}</span>
                       </span>
                     </div>
                     <span className="text-muted-foreground">
@@ -772,25 +800,27 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                 <CardContent className="py-8 text-center">
                   <Truck className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
                   <p className="text-lg font-medium">No batches yet</p>
-                  <p className="text-sm text-muted-foreground">
-                    Allocate zones to create delivery batches
-                  </p>
+                  <p className="text-sm text-muted-foreground">Allocate zones to create delivery batches</p>
                 </CardContent>
               </Card>
             ) : (
               batches.map((batch) => (
-                <Collapsible
-                  key={batch.id}
-                  open={openBatches.includes(batch.id)}
-                  onOpenChange={() => toggleBatch(batch.id)}
-                >
+                <Collapsible key={batch.id} open={openBatches.includes(batch.id)} onOpenChange={() => toggleBatch(batch.id)}>
                   <Card>
                     <CollapsibleTrigger asChild>
                       <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors py-4">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
-                            <div className={`p-2 rounded-lg ${batch.vehicle_type === 'truck' ? 'bg-orange-100' : 'bg-blue-100'}`}>
-                              <Truck className={`h-4 w-4 ${batch.vehicle_type === 'truck' ? 'text-orange-600' : 'text-blue-600'}`} />
+                            <div
+                              className={`p-2 rounded-lg ${
+                                batch.vehicle_type === 'truck' ? 'bg-orange-100' : 'bg-blue-100'
+                              }`}
+                            >
+                              <Truck
+                                className={`h-4 w-4 ${
+                                  batch.vehicle_type === 'truck' ? 'text-orange-600' : 'text-blue-600'
+                                }`}
+                              />
                             </div>
                             <div>
                               <CardTitle className="text-base flex items-center gap-2">
@@ -798,16 +828,18 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                                 {getStatusBadge(batch.status)}
                               </CardTitle>
                               <CardDescription className="text-xs">
-                                {batch.province_names.length > 1
-                                  ? batch.province_names.join(' + ')
-                                  : batch.area_group_name
-                                } • {batch.vehicle_type_label} • {batch.order_count} orders
+                                {batch.province_names.length > 1 ? batch.province_names.join(' + ') : batch.area_group_name} •{' '}
+                                {batch.vehicle_type_label} • {batch.order_count} orders
                               </CardDescription>
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium">{formatCurrency(toNumber(batch.total_value, 0))}</span>
-                            <ChevronDown className={`h-4 w-4 transition-transform ${openBatches.includes(batch.id) ? 'rotate-180' : ''}`} />
+                            <ChevronDown
+                              className={`h-4 w-4 transition-transform ${
+                                openBatches.includes(batch.id) ? 'rotate-180' : ''
+                              }`}
+                            />
                           </div>
                         </div>
                       </CardHeader>
@@ -843,20 +875,12 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                           <div className="flex gap-2">
                             {batch.status === 'planned' && (
                               <>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => handleStartDelivery(batch.id)}
-                                >
+                                <Button size="sm" variant="outline" onClick={() => handleStartDelivery(batch.id)}>
                                   <Play className="h-3 w-3 mr-1" />
                                   Start
                                 </Button>
 
-                                <Button
-                                  size="sm"
-                                  variant="destructive"
-                                  onClick={() => setDeleteDialog({ open: true, batch })}
-                                >
+                                <Button size="sm" variant="destructive" onClick={() => setDeleteDialog({ open: true, batch })}>
                                   <Trash2 className="h-3 w-3" />
                                 </Button>
                               </>
@@ -891,9 +915,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Allocate Vehicle</DialogTitle>
-            <DialogDescription>
-              Assign a vehicle type to {selectedCount} selected orders
-            </DialogDescription>
+            <DialogDescription>Assign a vehicle type to {selectedCount} selected orders</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-4">
@@ -923,12 +945,8 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                   <SelectValue placeholder="Select vehicle type" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="l300">
-                    L300 Van (Up to ₱150,000)
-                  </SelectItem>
-                  <SelectItem value="truck">
-                    Truck (Up to ₱250,000)
-                  </SelectItem>
+                  <SelectItem value="l300">L300 Van (Up to ₱150,000)</SelectItem>
+                  <SelectItem value="truck">Truck (Up to ₱250,000)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -942,23 +960,23 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
                   </SelectTrigger>
                   <SelectContent>
                     {vehicles
-                      .filter(v => v.type === selectedVehicleType)
-                      .map(vehicle => (
+                      .filter((v) => v.type === selectedVehicleType)
+                      .map((vehicle) => (
                         <SelectItem key={vehicle.id} value={vehicle.id.toString()}>
                           {vehicle.name} {vehicle.plate_number && `(${vehicle.plate_number})`}
                         </SelectItem>
-                      ))
-                    }
+                      ))}
                   </SelectContent>
                 </Select>
               </div>
             )}
 
             {selectedVehicleType && selectedCount > 0 && (
-              <div className={`p-3 rounded-lg ${selectedVehicleType === selectedRecommendedVehicle
-                ? 'bg-green-50 text-green-700'
-                : 'bg-yellow-50 text-yellow-700'
-                }`}>
+              <div
+                className={`p-3 rounded-lg ${
+                  selectedVehicleType === selectedRecommendedVehicle ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'
+                }`}
+              >
                 {selectedVehicleType === selectedRecommendedVehicle ? (
                   <p className="text-sm flex items-center gap-2">
                     <CheckCircle2 className="h-4 w-4" />
@@ -992,8 +1010,7 @@ export default function AllocationPlanner({ zones, batches, vehicles, summary, s
           <DialogHeader>
             <DialogTitle>Delete Batch</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete batch {deleteDialog.batch?.batch_number}?
-              All {deleteDialog.batch?.order_count} orders will be released back to unallocated.
+              Are you sure you want to delete batch {deleteDialog.batch?.batch_number}? All {deleteDialog.batch?.order_count} orders will be released back to unallocated.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
