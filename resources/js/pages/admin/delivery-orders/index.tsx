@@ -78,7 +78,7 @@ interface DeliveryOrder {
     actual_date: string | null;
     client_id: number;
     province_id: number;
-    status: 'pending' | 'on_time' | 'delayed' | 'cancelled';
+    status: 'pending' | 'on_time' | 'delayed';
     delivery_type: string | null;
     total_items: number;
     total_quantity: number;
@@ -212,7 +212,7 @@ export default function DeliveryOrdersIndex({ orders, provinces, clients, summar
             in_transit: { variant: 'default', label: 'In Transit', icon: <Truck className="h-3 w-3" /> },
             on_time: { variant: 'default', label: 'On Time', icon: <CheckCircle className="h-3 w-3" /> },
             delayed: { variant: 'destructive', label: 'Delayed', icon: <AlertTriangle className="h-3 w-3" /> },
-            cancelled: { variant: 'outline', label: 'Cancelled', icon: null },
+
         };
         const { variant, label, icon } = config[status] || config.pending;
         return (
@@ -402,7 +402,7 @@ export default function DeliveryOrdersIndex({ orders, provinces, clients, summar
                                     <SelectItem value="in_transit">In Transit</SelectItem>
                                     <SelectItem value="on_time">On Time</SelectItem>
                                     <SelectItem value="delayed">Delayed</SelectItem>
-                                    <SelectItem value="cancelled">Cancelled</SelectItem>
+
                                 </SelectContent>
                             </Select>
                             <Input
@@ -639,7 +639,7 @@ export default function DeliveryOrdersIndex({ orders, provinces, clients, summar
                                         <SelectItem value="in_transit">In Transit</SelectItem>
                                         <SelectItem value="on_time">On Time</SelectItem>
                                         <SelectItem value="delayed">Delayed</SelectItem>
-                                        <SelectItem value="cancelled">Cancelled</SelectItem>
+
                                     </SelectContent>
                                 </Select>
                             </div>
