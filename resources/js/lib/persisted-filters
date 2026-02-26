@@ -1,0 +1,152 @@
+// resources/js/lib/persisted-filters.ts
+import { router, usePage } from '@inertiajs/react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+/** Primitive values that Inertia can serialize in query string */
+export type Primitive = string | number | boolean | null | undefined;
+
+/** Generic filter bag for any page */
+export type FilterBag = Record<string, Primitive>;
+
+/** Convert any FilterBag to a RequestPayload that TS accepts */
+export function toRequestPayload(filters: FilterBag): Record<string, string> {
+  const out: Record<string, string> = {};
+  Object.entries(filters).forEach(([k, v]) => {
+    if (v === undefined || v === null) return; // drop undefined/null
+    out[k] = String(v);
+  });
+  return out;
+}
+
+const STORAGE_PREFIX = 'filters:';
+
+/** Use page's component name (e.g., 'admin/delivery-orders/index') as default namespace */
+function defaultNamespace() {
+  try {
+    const page = usePage();
+    // component example: 'admin/delivery-orders/index'
+    return `ns:${page.component}`;
+  } catch {
+    return 'ns:unknown';
+  }
+}
+
+/** Merge incoming (from server) with page defaults */
+export function normalize(incoming: Partial<FilterBag>, defaults: FilterBag): FilterBag {
+  return { ...defaults, ...incoming };
+}
+
+export function load(namespace: string): FilterBag | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + namespace);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as FilterBag;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function save(namespace: string, filters: FilterBag) {
+  try {
+    localStorage.setItem(STORAGE_PREFIX + namespace, JSON.stringify(filters));
+  } catch {
+    // ignore
+  }
+}
+
+export function clear(namespace: string) {
+  try {
+    localStorage.removeItem(STORAGE_PREFIX + namespace);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Universal persistence hook you can drop into ANY list page.
+ *
+ * - Persists filters to localStorage per page (by namespace).
+ * - Re-applies saved filters on first mount if different from current props.
+ * - Provides helpers to update filters (input/select), apply, and reset.
+ *
+ * Usage (per page):
+ *   const { filters, onInput, onSelect, apply, reset } = usePersistedFilters({
+ *     defaults,
+ *     incoming: props.filters,
+ *     indexUrl: routes.index.url(),
+ *     namespace: 'delivery-monitoring' // or omit to auto-use component name
+ *   });
+ */
+export function usePersistedFilters(opts: {
+  defaults: FilterBag;
+  incoming: Partial<FilterBag>;
+  indexUrl: string;               // e.g., routes.index.url()
+  namespace?: string;             // optional; auto derives from Inertia component if omitted
+}) {
+  const ns = opts.namespace ?? defaultNamespace();
+
+  // Keep a single normalized source of truth from server (props)
+  const normalizedIncoming = useMemo(
+    () => normalize(opts.incoming, opts.defaults),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(opts.incoming), JSON.stringify(opts.defaults)]
+  );
+
+  const [filters, setFilters] = useState<FilterBag>(normalizedIncoming);
+
+  // Keep local state in sync with props (e.g., after server visit/paginate)
+  useEffect(() => {
+    setFilters(normalizedIncoming);
+  }, [normalizedIncoming]);
+
+  // Apply saved filters once when page mounts (returning from other sidebar pages)
+  const appliedOnceRef = useRef(false);
+  useEffect(() => {
+    if (appliedOnceRef.current) return;
+    appliedOnceRef.current = true;
+
+    const saved = load(ns);
+    if (!saved) return;
+
+    const mergedSaved = normalize(saved, opts.defaults);
+    if (JSON.stringify(mergedSaved) !== JSON.stringify(normalizedIncoming)) {
+      router.get(
+        opts.indexUrl,
+        toRequestPayload(mergedSaved), // <-- ✅ TS-safe payload
+        { replace: true, preserveState: true, preserveScroll: true }
+      );
+    }
+  }, []); // once
+
+  /** Save + navigate (no debounce) */
+  const apply = (next: FilterBag, inertiaOpts = { preserveState: true, replace: true }) => {
+    save(ns, next);
+    setFilters(next);
+    router.get(opts.indexUrl, toRequestPayload(next), inertiaOpts);
+  };
+
+  /** Update a single key */
+  const set = (key: string, value: Primitive, inertiaOpts = { preserveState: true, replace: true }) => {
+    const next = { ...filters, [key]: value };
+    apply(next, inertiaOpts);
+  };
+
+  /** For <input /> onChange */
+  const onInput = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    set(key, e.target.value);
+  };
+
+  /** For <Select /> onValueChange */
+  const onSelect = (key: string) => (value: string) => {
+    set(key, value);
+  };
+
+  /** Clear storage + reload clean defaults */
+  const reset = () => {
+    clear(ns);
+    router.get(opts.indexUrl, {}, { replace: true });
+  };
+
+  return { filters, set, onInput, onSelect, apply, reset };
+}

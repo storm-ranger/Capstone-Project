@@ -13,19 +13,17 @@ import {
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import {
-    ArrowLeft,
-    Save,
-    Plus,
-    Trash2,
-    CheckCircle,
-    AlertTriangle,
-    Timer,
-    Loader2,
-    Truck,
-} from 'lucide-react';
-import { useState, useEffect } from 'react';
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
+import { ArrowLeft, Save, Plus, Trash2, CheckCircle, AlertTriangle, Timer, Loader2, Truck } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
 import * as routes from '@/routes/admin/delivery-orders';
 
 interface Province {
@@ -66,6 +64,8 @@ interface Product {
 interface OrderItem {
     id?: number;
     product_id: string;
+    part_number: string;
+    description: string;
     unit_price: string;
     quantity: string;
 }
@@ -106,9 +106,11 @@ interface Props {
 }
 
 export default function DeliveryOrdersEdit({ order, clients }: Props) {
-    const initialItems: OrderItem[] = order.items.map((item) => ({
+    const initialItems: OrderItem[] = order.items.map(item => ({
         id: item.id,
         product_id: item.product_id?.toString() || '',
+        part_number: item.part_number,
+        description: item.description || '',
         unit_price: item.unit_price.toString(),
         quantity: item.quantity.toString(),
     }));
@@ -117,13 +119,14 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
     const [clientProducts, setClientProducts] = useState<Product[]>([]);
     const [loadingProducts, setLoadingProducts] = useState(false);
 
+    // Format date for HTML date input (YYYY-MM-DD)
     const formatDateForInput = (dateString: string | null): string => {
         if (!dateString) return '';
         const date = new Date(dateString);
         return date.toISOString().split('T')[0];
     };
 
-    const { data, setData, put, processing, errors, transform } = useForm({
+    const { data, setData, put, processing, errors } = useForm({
         po_number: order.po_number,
         po_date: formatDateForInput(order.po_date),
         scheduled_date: formatDateForInput(order.scheduled_date),
@@ -139,7 +142,7 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
         if (data.client_id) {
             setLoadingProducts(true);
             fetch(`/admin/clients/${data.client_id}/products`)
-                .then((res) => res.json())
+                .then(res => res.json())
                 .then((products: Product[]) => {
                     setClientProducts(products);
                     setLoadingProducts(false);
@@ -158,48 +161,35 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
     }, [items, setData]);
 
     const addItem = () => {
-        setItems((prev) => [...prev, { product_id: '', unit_price: '', quantity: '' }]);
+        const newItems = [...items, { product_id: '', part_number: '', description: '', unit_price: '', quantity: '' }];
+        setItems(newItems);
     };
 
     const removeItem = (index: number) => {
-        setItems((prev) => prev.filter((_, i) => i !== index));
+        const newItems = items.filter((_, i) => i !== index);
+        setItems(newItems);
     };
 
     const updateItem = (index: number, field: keyof OrderItem, value: string) => {
         const newItems = [...items];
         newItems[index] = { ...newItems[index], [field]: value };
-
-        // Auto-fill unit price when selecting product
+        
+        // Auto-fill from product selection
         if (field === 'product_id' && value) {
-            const product = clientProducts.find((p) => p.id.toString() === value);
+            const product = clientProducts.find(p => p.id.toString() === value);
             if (product) {
+                newItems[index].part_number = product.part_number;
+                newItems[index].description = product.description || '';
                 newItems[index].unit_price = product.unit_price.toString();
             }
         }
-
+        
         setItems(newItems);
     };
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-
-        // keep payload clean (no description/part_number)
-        const cleanedItems = items.map((i) => ({
-            id: i.id,
-            product_id: i.product_id,
-            unit_price: i.unit_price,
-            quantity: i.quantity,
-        }));
-
-        transform((formData) => ({
-            ...formData,
-            items: cleanedItems,
-        }));
-
-        put(routes.update.url({ delivery_order: order.id }), {
-            preserveScroll: true,
-            onFinish: () => transform((d) => d),
-        });
+        put(routes.update.url({ delivery_order: order.id }));
     };
 
     const calculateItemTotal = (item: OrderItem) => {
@@ -219,6 +209,7 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
         }).format(amount);
     };
 
+    // Memoized product options for combobox (with disabled state for already-added items)
     const getProductOptions = (currentIndex: number): ComboboxOption[] => {
         return clientProducts.map((product) => {
             const isAlreadyAdded = items.some(
@@ -234,10 +225,7 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
     };
 
     const getStatusBadge = (status: string) => {
-        const config: Record<
-            string,
-            { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string; icon: React.ReactNode }
-        > = {
+        const config: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string; icon: React.ReactNode }> = {
             pending: { variant: 'secondary', label: 'Pending', icon: <Timer className="h-3 w-3" /> },
             confirmed: { variant: 'outline', label: 'Confirmed', icon: <CheckCircle className="h-3 w-3" /> },
             in_transit: { variant: 'default', label: 'In Transit', icon: <Truck className="h-3 w-3" /> },
@@ -271,7 +259,9 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
                             <h1 className="text-2xl font-bold tracking-tight">Edit Delivery Order</h1>
                             {getStatusBadge(order.status)}
                         </div>
-                        <p className="text-muted-foreground">PO# {order.po_number}</p>
+                        <p className="text-muted-foreground">
+                            PO# {order.po_number}
+                        </p>
                     </div>
                 </div>
 
@@ -281,7 +271,9 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
                         <Card>
                             <CardHeader>
                                 <CardTitle>Order Information</CardTitle>
-                                <CardDescription>Update the purchase order details</CardDescription>
+                                <CardDescription>
+                                    Update the purchase order details
+                                </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 <div className="space-y-2">
@@ -292,7 +284,9 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
                                         onChange={(e) => setData('po_number', e.target.value)}
                                         placeholder="e.g., PO-2025-001"
                                     />
-                                    {errors.po_number && <p className="text-sm text-destructive">{errors.po_number}</p>}
+                                    {errors.po_number && (
+                                        <p className="text-sm text-destructive">{errors.po_number}</p>
+                                    )}
                                 </div>
 
                                 <div className="grid gap-4 sm:grid-cols-2">
@@ -304,7 +298,9 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
                                             value={data.po_date}
                                             onChange={(e) => setData('po_date', e.target.value)}
                                         />
-                                        {errors.po_date && <p className="text-sm text-destructive">{errors.po_date}</p>}
+                                        {errors.po_date && (
+                                            <p className="text-sm text-destructive">{errors.po_date}</p>
+                                        )}
                                     </div>
 
                                     <div className="space-y-2">
@@ -355,7 +351,9 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
                                         <Label>Status</Label>
                                         <div className="flex items-center h-10 px-3 border rounded-md bg-muted">
                                             {getStatusBadge(order.status)}
-                                            <span className="ml-2 text-xs text-muted-foreground">(Auto-calculated)</span>
+                                            <span className="ml-2 text-xs text-muted-foreground">
+                                                (Auto-calculated)
+                                            </span>
                                         </div>
                                     </div>
                                 </div>
@@ -378,17 +376,25 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
                             <CardHeader className="flex flex-row items-center justify-between">
                                 <div>
                                     <CardTitle>Order Items</CardTitle>
-                                    <CardDescription>Items linked to this order</CardDescription>
+                                    <CardDescription>
+                                        Items linked to this order
+                                    </CardDescription>
                                 </div>
-                                <Button type="button" variant="outline" size="sm" onClick={addItem}>
+                                <Button 
+                                    type="button" 
+                                    variant="outline" 
+                                    size="sm" 
+                                    onClick={addItem}
+                                >
                                     <Plus className="mr-2 h-4 w-4" />
                                     Add Item
                                 </Button>
                             </CardHeader>
-
                             <CardContent>
-                                {errors.items && <p className="text-sm text-destructive mb-4">{errors.items}</p>}
-
+                                {errors.items && (
+                                    <p className="text-sm text-destructive mb-4">{errors.items}</p>
+                                )}
+                                
                                 {loadingProducts ? (
                                     <div className="text-center py-8">
                                         <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
@@ -399,102 +405,106 @@ export default function DeliveryOrdersEdit({ order, clients }: Props) {
                                         No items in this order. Click "Add Item" to add products.
                                     </div>
                                 ) : (
-                                    <>
-                                        {/* HEADER ROW (create-order style) */}
-                                        <div className="grid grid-cols-[1fr_120px_100px_140px_40px] gap-4 border-b pb-2 text-sm text-muted-foreground">
-                                            <div>Product</div>
-                                            <div>Unit Price</div>
-                                            <div>Quantity</div>
-                                            <div className="text-right">Total</div>
-                                            <div />
-                                        </div>
-
-                                        {/* ITEMS ROWS */}
-                                        <div className="divide-y">
-                                            {items.map((item, index) => (
-                                                <div
-                                                    key={index}
-                                                    className="grid grid-cols-[1fr_120px_100px_140px_40px] gap-4 py-3 items-center"
-                                                >
-                                                    <div className="min-w-0">
-                                                        {clientProducts.length === 0 ? (
-                                                            <div className="px-2 py-2 text-sm text-muted-foreground">
-                                                                No products available
-                                                            </div>
-                                                        ) : (
-                                                            <Combobox
-                                                                options={getProductOptions(index)}
-                                                                value={item.product_id || ''}
-                                                                onValueChange={(value) => updateItem(index, 'product_id', value)}
-                                                                placeholder="Select product..."
-                                                                searchPlaceholder="Search product..."
-                                                                emptyMessage="No products found."
-                                                            />
-                                                        )}
-                                                    </div>
-
-                                                    <div>
-                                                        <Input
-                                                            type="number"
-                                                            step="0.01"
-                                                            min="0"
-                                                            className="h-10"
-                                                            value={item.unit_price}
-                                                            onChange={(e) => updateItem(index, 'unit_price', e.target.value)}
-                                                            placeholder="0.00"
+                                <>
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead className="w-[200px]">Product</TableHead>
+                                            <TableHead>Part Number</TableHead>
+                                            <TableHead>Description</TableHead>
+                                            <TableHead className="w-[120px]">Unit Price</TableHead>
+                                            <TableHead className="w-[100px]">Quantity</TableHead>
+                                            <TableHead className="w-[120px] text-right">Total</TableHead>
+                                            <TableHead className="w-[50px]"></TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {items.map((item, index) => (
+                                            <TableRow key={index}>
+                                                <TableCell>
+                                                    {clientProducts.length === 0 ? (
+                                                        <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                                                            No products available
+                                                        </div>
+                                                    ) : (
+                                                        <Combobox
+                                                            options={getProductOptions(index)}
+                                                            value={item.product_id || ''}
+                                                            onValueChange={(value) => updateItem(index, 'product_id', value)}
+                                                            placeholder="Select product..."
+                                                            searchPlaceholder="Search product..."
+                                                            emptyMessage="No products found."
                                                         />
-                                                    </div>
+                                                    )}
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Input
+                                                        value={item.part_number}
+                                                        onChange={(e) => updateItem(index, 'part_number', e.target.value)}
+                                                        placeholder="Part #"
+                                                    />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Input
+                                                        value={item.description}
+                                                        onChange={(e) => updateItem(index, 'description', e.target.value)}
+                                                        placeholder="Description"
+                                                    />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        value={item.unit_price}
+                                                        onChange={(e) => updateItem(index, 'unit_price', e.target.value)}
+                                                        placeholder="0.00"
+                                                    />
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Input
+                                                        type="number"
+                                                        min="1"
+                                                        value={item.quantity}
+                                                        onChange={(e) => updateItem(index, 'quantity', e.target.value)}
+                                                        placeholder="0"
+                                                    />
+                                                </TableCell>
+                                                <TableCell className="text-right font-medium">
+                                                    {formatCurrency(calculateItemTotal(item))}
+                                                </TableCell>
+                                                <TableCell>
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        onClick={() => removeItem(index)}
+                                                    >
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </Button>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
 
-                                                    <div>
-                                                        <Input
-                                                            type="number"
-                                                            min="0"
-                                                            className="h-10"
-                                                            value={item.quantity}
-                                                            onChange={(e) => updateItem(index, 'quantity', e.target.value)}
-                                                            placeholder="0"
-                                                        />
-                                                    </div>
-
-                                                    {/* ✅ RIGHT-ALIGNED TOTAL AMOUNT (matches your screenshot) */}
-                                                    <div className="flex justify-end font-medium whitespace-nowrap">
-                                                        {formatCurrency(calculateItemTotal(item))}
-                                                    </div>
-
-                                                    <div className="flex justify-end">
-                                                        <Button
-                                                            type="button"
-                                                            variant="ghost"
-                                                            size="icon"
-                                                            onClick={() => removeItem(index)}
-                                                        >
-                                                            <Trash2 className="h-4 w-4" />
-                                                        </Button>
-                                                    </div>
-                                                </div>
-                                            ))}
+                                <div className="mt-4 flex justify-end">
+                                    <div className="w-[300px] space-y-2">
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-muted-foreground">Total Items:</span>
+                                            <span>{items.length}</span>
                                         </div>
-
-                                        {/* TOTALS */}
-                                        <div className="mt-4 flex justify-end">
-                                            <div className="w-[320px] space-y-2">
-                                                <div className="flex justify-between text-sm">
-                                                    <span className="text-muted-foreground">Total Items:</span>
-                                                    <span>{items.length}</span>
-                                                </div>
-                                                <div className="flex justify-between text-sm">
-                                                    <span className="text-muted-foreground">Total Quantity:</span>
-                                                    <span>
-                                                        {items.reduce((sum, item) => sum + (parseInt(item.quantity) || 0), 0)}
-                                                    </span>
-                                                </div>
-                                                <div className="flex justify-between font-bold text-lg border-t pt-2">
-                                                    <span>Grand Total:</span>
-                                                    <span className="whitespace-nowrap">{formatCurrency(calculateGrandTotal())}</span>
-                                                </div>
-                                            </div>
+                                        <div className="flex justify-between text-sm">
+                                            <span className="text-muted-foreground">Total Quantity:</span>
+                                            <span>{items.reduce((sum, item) => sum + (parseInt(item.quantity) || 0), 0)}</span>
                                         </div>
-                                    </>
+                                        <div className="flex justify-between font-bold text-lg border-t pt-2">
+                                            <span>Grand Total:</span>
+                                            <span>{formatCurrency(calculateGrandTotal())}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                </>
                                 )}
                             </CardContent>
                         </Card>
