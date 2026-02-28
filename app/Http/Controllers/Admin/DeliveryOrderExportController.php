@@ -207,7 +207,7 @@ class DeliveryOrderExportController extends Controller
             if ($batchKey !== 'unbatched') {
                 $batch = $batchOrders->first()->batch;
                 $batchLabel = $batch ? $batch->batch_number : "Batch #{$batchKey}";
-                $sheet->setCellValue('A' . $row, $batchLabel);
+                $sheet->setCellValue('A' . $row, '');
                 $sheet->setCellValue('N' . $row, $batchTotalValue);
                 $sheet->setCellValue('O' . $row, $batchTotalRate);
                 $batchSeparatorRows[] = $row;
