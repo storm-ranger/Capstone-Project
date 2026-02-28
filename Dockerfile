@@ -25,4 +25,4 @@ RUN npm ci --legacy-peer-deps && npm run build
 RUN chmod -R 775 storage bootstrap/cache
 
 EXPOSE 10000
-CMD php artisan config:clear && php artisan cache:clear && php artisan route:clear && php artisan view:clear && php artisan serve --host=0.0.0.0 --port=10000
+CMD php artisan config:clear && php artisan migrate --force && php artisan serve --host=0.0.0.0 --port=$PORT
