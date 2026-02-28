@@ -8,15 +8,22 @@ RUN apt-get update && apt-get install -y \
     unzip \
     nodejs \
     npm \
-    libsqlite3-dev
+    libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
+    default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PHP extensions (IMPORTANT: includes gd and mysql)
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install pdo pdo_mysql gd
 
 # Install Composer
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-# Set working directory
 WORKDIR /var/www
 
-# Copy project files
+# Copy project
 COPY . .
 
 # Install PHP dependencies
@@ -25,17 +32,11 @@ RUN composer install --no-dev --optimize-autoloader
 # Install Node dependencies and build assets
 RUN npm install && npm run build
 
-# Create SQLite database
-RUN mkdir -p database && touch database/database.sqlite
-
 # Set permissions
-RUN chmod -R 775 storage bootstrap/cache database
-
-# Generate Laravel key
-RUN php artisan key:generate
+RUN chmod -R 775 storage bootstrap/cache
 
 # Expose port
 EXPOSE 10000
 
-# Start Laravel server
+# Start Laravel
 CMD php artisan serve --host=0.0.0.0 --port=10000
