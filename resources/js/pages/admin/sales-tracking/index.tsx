@@ -609,7 +609,7 @@ export default function SalesTracking({ salesData, totals, provinceBreakdown, pr
                             </div>
                             <div>
                                 <p className="font-medium">Target Sales</p>
-                                <p className="text-muted-foreground">Rate ÷ 2% = Rate × 50</p>
+                                <p className="text-muted-foreground">Rate ÷ 2%</p>
                             </div>
                             <div>
                                 <p className="font-medium">Opportunity Loss/Gain</p>
