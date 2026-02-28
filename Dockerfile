@@ -20,7 +20,7 @@ WORKDIR /var/www
 COPY . .
 
 RUN composer install --no-dev --optimize-autoloader
-RUN npm install && npm run build
+RUN npm ci --legacy-peer-deps && npm run build
 
 RUN chmod -R 775 storage bootstrap/cache
 
